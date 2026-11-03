@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="th" data-theme="dark" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Portal | DLD-MFAcenter</title>
+    <!-- โหลด DaisyUI CSS & Tailwind CSS CDN -->
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.14/dist/full.min.css" rel="stylesheet" type="text/css" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- โหลด Alpine.js และ SweetAlert2 -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <!-- ฟอนต์ภาษาไทย Kanit -->
+    <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <style> 
+        body { font-family: 'Kanit', sans-serif; } 
+        .swal2-popup {
+            background: rgba(15, 23, 42, 0.95) !important;
+            backdrop-filter: blur(16px);
+            border: 1px solid rgba(51, 65, 85, 0.6);
+            border-radius: 1.5rem !important;
+            color: #f8fafc !important;
+            font-family: 'Kanit', sans-serif !important;
+        }
+        .swal2-title { color: #ffffff !important; font-size: 1.25rem !important; }
+        .swal2-html-container { color: #94a3b8 !important; font-size: 0.875rem !important; }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-slate-950 via-slate-900 to-blue-950 min-h-screen p-6 relative overflow-x-hidden">
+
+    <!-- เอฟเฟกต์แสงไฟเรืองแสงด้านหลัง (Background Ambient Glow) -->
+    <div class="fixed -top-40 -left-40 w-96 h-96 bg-blue-600/15 rounded-full blur-[140px] pointer-events-none"></div>
+    <div class="fixed top-1/3 -right-40 w-96 h-96 bg-indigo-600/15 rounded-full blur-[140px] pointer-events-none"></div>
+
+    <div x-data="adminDashboard()" x-init="initData()" class="max-w-7xl mx-auto space-y-6 relative z-10">
+        
+        <!-- 1. Navbar ด้านบน (DaisyUI + Glassmorphic Card) -->
+        <div class="card bg-slate-900/40 backdrop-blur-xl border border-slate-800/60 shadow-xl shadow-slate-950/40">
+            <div class="card-body p-5 flex-row flex-wrap justify-between items-center gap-4">
+                <div>
+                    <h1 class="text-2xl font-bold text-white flex items-center gap-2.5">
+                        <span class="p-2 bg-blue-600/20 text-blue-400 border border-blue-500/30 rounded-xl shadow-inner">🛡️</span>
+                        DLD-MFAcenter Admin Portal
+                    </h1>
+                    <div class="flex flex-wrap items-center gap-2 mt-2 text-xs text-slate-400">
+                        <span>บทบาท: <span class="badge badge-accent badge-sm font-semibold" x-text="metrics.role || 'LOADING...'"></span></span>
+                        <span class="text-slate-700">|</span>
+                        <span>ผู้ใช้งาน: <strong class="text-white font-semibold" x-text="metrics.username || '-'"></strong></span>
+                        <span class="text-slate-700">|</span>
+                        <span>ระบบที่ดูแล: <strong class="text-blue-400 font-semibold" x-text="metrics.app_name || '-'"></strong></span>
+                    </div>
+                </div>
+
+                <div class="flex items-center gap-2">
+                    <button @click="showChangePwdModal = true" class="btn btn-outline btn-info btn-sm rounded-xl">
+                        🔑 เปลี่ยนรหัสผ่าน
+                    </button>
+                    <a href="/admin/logout" class="btn btn-outline btn-error btn-sm rounded-xl">
+                        🚪 ออกจากระบบ
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <!-- 2. การ์ดแสดงสถิติภาพรวม (DaisyUI Stats Component) -->
+        <div class="stats stats-vertical lg:stats-horizontal shadow-xl shadow-slate-950/40 bg-slate-900/40 backdrop-blur-xl border border-slate-800/60 w-full rounded-2xl">
+            <div class="stat p-5">
+                <div class="stat-title text-slate-400 text-xs font-medium">ระบบงานในความดูแล</div>
+                <div class="stat-value text-white text-3xl font-bold mt-1" x-text="metrics.total_applications || 0">0</div>
+            </div>
+            <div class="stat p-5">
+                <div class="stat-title text-slate-400 text-xs font-medium">จำนวนผู้ใช้งาน (Users)</div>
+                <div class="stat-value text-emerald-400 text-3xl font-bold mt-1" x-text="metrics.total_users || 0">0</div>
+            </div>
+            <div class="stat p-5">
+                <div class="stat-title text-slate-400 text-xs font-medium">บันทึกเหตุการณ์ (Audit Logs)</div>
+                <div class="stat-value text-blue-400 text-3xl font-bold mt-1" x-text="metrics.total_audit_logs || 0">0</div>
+            </div>
+        </div>
+
+        <!-- 3. แถบสลับเมนูและปุ่มเพิ่ม Admin (DaisyUI Tabs) -->
+        <div class="flex flex-wrap justify-between items-center gap-3 bg-slate-900/30 backdrop-blur-md border border-slate-800/50 p-2.5 rounded-2xl">
+            <div class="role="tablist" class="tabs tabs-boxed bg-transparent gap-1">
+                <button @click="activeTab = 'users'" :class="activeTab === 'users' ? 'tab-active !bg-blue-600/40 !text-white font-semibold' : 'text-slate-400'" class="tab text-xs rounded-xl">
+                    👥 จัดการผู้ใช้งาน & Reset MFA
+                </button>
+                <button x-show="metrics.role === 'SUPERADMIN'" @click="activeTab = 'apps'" :class="activeTab === 'apps' ? 'tab-active !bg-blue-600/40 !text-white font-semibold' : 'text-slate-400'" class="tab text-xs rounded-xl">
+                    🌐 ระบบงาน (Target Applications)
+                </button>
+                <button @click="activeTab = 'logs'" :class="activeTab === 'logs' ? 'tab-active !bg-blue-600/40 !text-white font-semibold' : 'text-slate-400'" class="tab text-xs rounded-xl">
+                    📜 บันทึกเหตุการณ์ (Audit Logs)
+                </button>
+            </div>
+
+            <button x-show="metrics.role === 'SUPERADMIN'" @click="showAddAdminModal = true" class="btn btn-success btn-sm text-white rounded-xl shadow">
+                ➕ เพิ่ม App Admin
+            </button>
+        </div>
+
+        <!-- TAB 1: จัดการผู้ใช้งาน & Reset MFA -->
+        <div x-show="activeTab === 'users'" class="card bg-slate-900/40 backdrop-blur-xl border border-slate-800/60 shadow-xl shadow-slate-950/40">
+            <div class="card-body p-6 space-y-4">
+                <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pb-3 border-b border-slate-800/80">
+                    <div>
+                        <h2 class="text-lg font-semibold text-white">รายชื่อผู้ใช้งานและจัดการ Reset MFA</h2>
+                        <p class="text-xs text-slate-400">
+                            แสดงข้อมูล <span class="text-emerald-400 font-mono font-semibold" x-text="filteredUsers.length">0</span> จากทั้งหมด <span class="text-slate-300 font-mono" x-text="users.length">0</span> รายการ
+                        </p>
+                    </div>
+
+                    <div class="flex flex-wrap items-center gap-2.5 w-full sm:w-auto">
+                        <input type="text" x-model="userSearchQuery" placeholder="🔍 ค้นหา Username..." class="input input-bordered input-sm bg-slate-950/60 border-slate-800 text-xs text-white focus:input-primary w-full sm:w-64">
+
+                        <select x-show="metrics.role === 'SUPERADMIN'" x-model="selectedAppFilter" class="select select-bordered select-sm bg-slate-950/60 border-slate-800 text-xs text-white">
+                            <option value="">🌐 ทุกระบบงาน</option>
+                            <template x-for="app in apps" :key="app.id">
+                                <option :value="app.id" x-text="app.app_name"></option>
+                            </template>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="overflow-x-auto">
+                    <table class="table table-sm w-full text-xs text-slate-300">
+                        <thead class="bg-slate-950/80 text-slate-400">
+                            <tr>
+                                <th>Username</th>
+                                <th>บทบาท (Role)</th>
+                                <th>ระบบงาน (Application)</th>
+                                <th>สถานะ MFA</th>
+                                <th>สถานะรหัสผ่าน</th>
+                                <th>การจัดการ</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="u in filteredUsers" :key="u.id">
+                                <tr class="border-b border-slate-800/40 hover:bg-slate-850/40 transition-colors">
+                                    <td class="font-medium text-white" x-text="u.username"></td>
+                                    <td>
+                                        <span :class="u.role === 'SUPERADMIN' ? 'badge-secondary' : (u.role === 'APP_ADMIN' ? 'badge-info' : 'badge-ghost')" class="badge badge-sm font-semibold" x-text="u.role"></span>
+                                    </td>
+                                    <td class="font-medium">
+                                        <span :class="u.role === 'SUPERADMIN' ? 'text-purple-400' : 'text-blue-400'" x-text="u.app_name"></span>
+                                    </td>
+                                    <td>
+                                        <span :class="u.is_mfa_enrolled ? 'badge-success' : 'badge-warning'" class="badge badge-sm" x-text="u.is_mfa_enrolled ? 'ผูก MFA แล้ว' : 'ยังไม่ผูก / รอสแกน'"></span>
+                                    </td>
+                                    <td>
+                                        <span :class="u.must_change_password ? 'badge-error' : 'badge-ghost'" class="badge badge-sm" x-text="u.must_change_password ? 'รอเปลี่ยนรหัสผ่านแรก' : 'ปกติ'"></span>
+                                    </td>
+                                    <td>
+                                        <button @click="resetMfa(u)" class="btn btn-error btn-xs rounded-lg text-white gap-1">
+                                            🔄 Reset MFA
+                                        </button>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 2: Target Applications & Emergency Bypass Switch -->
+        <div x-show="activeTab === 'apps' && metrics.role === 'SUPERADMIN'" class="card bg-slate-900/40 backdrop-blur-xl border border-slate-800/60 shadow-xl shadow-slate-950/40">
+            <div class="card-body p-6 space-y-4">
+                <div class="flex justify-between items-center border-b border-slate-800/80 pb-3">
+                    <div>
+                        <h2 class="text-lg font-semibold text-white">จัดการระบบงานปลายทาง (Target Applications)</h2>
+                        <p class="text-xs text-slate-400">ลงทะเบียนและสลับสวิตช์ Emergency MFA Bypass กรณีฉุกเฉิน</p>
+                    </div>
+                    <button @click="showAddAppModal = true" class="btn btn-primary btn-sm text-white rounded-xl shadow">
+                        🌐 เพิ่มระบบงานใหม่
+                    </button>
+                </div>
+
+                <div class="overflow-x-auto">
+                    <table class="table table-sm w-full text-xs text-slate-300">
+                        <thead class="bg-slate-950/80 text-slate-400">
+                            <tr>
+                                <th>ชื่อระบบงาน</th>
+                                <th>Domain หน้าบ้าน</th>
+                                <th>Backend Target URL</th>
+                                <th>สถานะ MFA</th>
+                                <th>MFA Bypass (กรณีฉุกเฉิน)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="app in apps" :key="app.id">
+                                <tr class="border-b border-slate-800/40 hover:bg-slate-850/40 transition-colors">
+                                    <td class="font-medium text-white" x-text="app.app_name"></td>
+                                    <td class="text-blue-400 font-mono" x-text="app.public_domain"></td>
+                                    <td class="text-slate-400 font-mono" x-text="app.backend_target_url"></td>
+                                    <td>
+                                        <span :class="app.enable_mfa ? 'badge-success' : 'badge-ghost'" class="badge badge-sm" x-text="app.enable_mfa ? 'เปิดใช้งาน' : 'ปิดใช้งาน'"></span>
+                                    </td>
+                                    <!-- ⚡ DaisyUI Toggle Switch สลับโหมด Bypass -->
+                                    <td>
+                                        <label class="cursor-pointer label justify-start gap-2.5">
+                                            <input type="checkbox" class="toggle toggle-warning toggle-sm" :checked="app.is_bypass_enabled" @change="toggleBypass(app)" />
+                                            <span class="label-text text-xs font-medium" :class="app.is_bypass_enabled ? 'text-amber-400 font-bold' : 'text-slate-400'" x-text="app.is_bypass_enabled ? '⚡ Bypass (ฉุกเฉิน)' : '🔒 บังคับ MFA'"></span>
+                                        </label>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 3: Audit Logs -->
+        <div x-show="activeTab === 'logs'" class="card bg-slate-900/40 backdrop-blur-xl border border-slate-800/60 shadow-xl shadow-slate-950/40">
+            <div class="card-body p-6 space-y-4">
+                <h2 class="text-lg font-semibold text-white">บันทึกเหตุการณ์ความปลอดภัย (Audit Logs)</h2>
+                <div class="overflow-x-auto">
+                    <table class="table table-sm w-full text-xs text-slate-300">
+                        <thead class="bg-slate-950/80 text-slate-400">
+                            <tr>
+                                <th>เวลาที่เกิดเหตุการณ์</th>
+                                <th>Domain</th>
+                                <th>IP ผู้ใช้งาน</th>
+                                <th>Username</th>
+                                <th>กิจกรรม (Action)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="log in logs" :key="log.id">
+                                <tr class="border-b border-slate-800/40 hover:bg-slate-850/40 transition-colors">
+                                    <td class="font-mono text-slate-400" x-text="formatDate(log.timestamp)"></td>
+                                    <td class="text-blue-400" x-text="log.app_domain"></td>
+                                    <td class="font-mono" x-text="log.client_ip"></td>
+                                    <td class="font-medium text-white" x-text="log.username || '-'"></td>
+                                    <td>
+                                        <span class="badge badge-neutral font-mono text-[10px]" x-text="log.action"></span>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- MODALS (DaisyUI & Glassmorphism Modals) -->
+        <!-- Modal 1: เปลี่ยนรหัสผ่าน -->
+        <div x-show="showChangePwdModal || metrics.must_change_password" class="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 z-50">
+            <div class="card bg-slate-900/80 backdrop-blur-2xl border border-slate-700/40 w-full max-w-md rounded-3xl p-6 space-y-4 shadow-2xl">
+                <h3 class="text-lg font-semibold text-white flex items-center gap-2">
+                    🔑 เปลี่ยนรหัสผ่าน
+                    <span x-show="metrics.must_change_password" class="text-xs text-rose-400 font-normal">(จำเป็นสำหรับการเข้าใช้งานครั้งแรก)</span>
+                </h3>
+                <form @submit.prevent="submitChangePassword" class="space-y-3">
+                    <div class="form-control">
+                        <label class="label"><span class="label-text text-xs text-slate-300">รหัสผ่านเดิม</span></label>
+                        <input type="password" x-model="pwdForm.oldPassword" required class="input input-bordered input-sm bg-slate-950/60 border-slate-800">
+                    </div>
+                    <div class="form-control">
+                        <label class="label"><span class="label-text text-xs text-slate-300">รหัสผ่านใหม่ (อย่างน้อย 6 ตัวอักษร)</span></label>
+                        <input type="password" x-model="pwdForm.newPassword" required class="input input-bordered input-sm bg-slate-950/60 border-slate-800">
+                    </div>
+                    <div class="form-control">
+                        <label class="label"><span class="label-text text-xs text-slate-300">ยืนยันรหัสผ่านใหม่</span></label>
+                        <input type="password" x-model="pwdForm.confirmPassword" required class="input input-bordered input-sm bg-slate-950/60 border-slate-800">
+                    </div>
+                    <div class="flex justify-end gap-2 pt-2">
+                        <button type="button" x-show="!metrics.must_change_password" @click="showChangePwdModal = false" class="btn btn-ghost btn-sm text-xs text-slate-400">ยกเลิก</button>
+                        <button type="submit" class="btn btn-primary btn-sm text-xs text-white">บันทึกรหัสผ่านใหม่</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Modal 2: เพิ่ม App Admin -->
+        <div x-show="showAddAdminModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 z-50">
+            <div class="card bg-slate-900/80 backdrop-blur-2xl border border-slate-700/40 w-full max-w-md rounded-3xl p-6 space-y-4 shadow-2xl">
+                <h3 class="text-lg font-semibold text-white">➕ เพิ่มผู้ดูแลระบบประจำแอป (App Admin)</h3>
+                <form @submit.prevent="submitAddAdmin" class="space-y-3">
+                    <div class="form-control">
+                        <label class="label"><span class="label-text text-xs text-slate-300">เลือกระบบงานที่ดูแล</span></label>
+                        <select x-model="adminForm.appId" required class="select select-bordered select-sm bg-slate-950/60 border-slate-800 text-xs">
+                            <option value="">-- กรุณาเลือกระบบงาน --</option>
+                            <template x-for="app in apps" :key="app.id">
+                                <option :value="app.id" x-text="app.app_name + ' (' + app.public_domain + ')'"></option>
+                            </template>
+                        </select>
+                    </div>
+                    <div class="form-control">
+                        <label class="label"><span class="label-text text-xs text-slate-300">Username</span></label>
+                        <input type="text" x-model="adminForm.username" placeholder="เช่น admin_bblp" required class="input input-bordered input-sm bg-slate-950/60 border-slate-800 text-xs">
+                    </div>
+                    <div class="form-control">
+                        <label class="label"><span class="label-text text-xs text-slate-300">รหัสผ่านชั่วคราว</span></label>
+                        <input type="password" x-model="adminForm.password" required class="input input-bordered input-sm bg-slate-950/60 border-slate-800 text-xs">
+                    </div>
+                    <div class="flex justify-end gap-2 pt-2">
+                        <button type="button" @click="showAddAdminModal = false" class="btn btn-ghost btn-sm text-xs text-slate-400">ยกเลิก</button>
+                        <button type="submit" class="btn btn-success btn-sm text-xs text-white">สร้าง Admin ใหม่</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Modal 3: เพิ่มระบบงานใหม่ -->
+        <div x-show="showAddAppModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 z-50">
+            <div class="card bg-slate-900/80 backdrop-blur-2xl border border-slate-700/40 w-full max-w-md rounded-3xl p-6 space-y-4 shadow-2xl">
+                <h3 class="text-lg font-semibold text-white">🌐 เพิ่มระบบงานใหม่ (Target Application)</h3>
+                <form @submit.prevent="submitAddApp" class="space-y-3">
+                    <div class="form-control">
+                        <label class="label"><span class="label-text text-xs text-slate-300">ชื่อระบบงาน</span></label>
+                        <input type="text" x-model="appForm.appName" placeholder="เช่น ระบบสารสนเทศโคนม BBLP-Dairy" required class="input input-bordered input-sm bg-slate-950/60 border-slate-800 text-xs">
+                    </div>
+                    <div class="form-control">
+                        <label class="label"><span class="label-text text-xs text-slate-300">Domain หน้าบ้าน (Public Domain)</span></label>
+                        <input type="text" x-model="appForm.publicDomain" placeholder="เช่น bblp-dairy.dld.go.th" required class="input input-bordered input-sm bg-slate-950/60 border-slate-800 font-mono text-xs">
+                    </div>
+                    <div class="form-control">
+                        <label class="label"><span class="label-text text-xs text-slate-300">Backend Target URL</span></label>
+                        <input type="text" x-model="appForm.backendUrl" placeholder="เช่น http://172.18.0.1:8080" required class="input input-bordered input-sm bg-slate-950/60 border-slate-800 font-mono text-xs">
+                    </div>
+                    <div class="form-control">
+                        <label class="label cursor-pointer justify-start gap-2">
+                            <input type="checkbox" x-model="appForm.enableMfa" class="checkbox checkbox-primary checkbox-sm" />
+                            <span class="label-text text-xs text-slate-300">เปิดใช้งานยืนยันตัวตนสองชั้น (MFA)</span>
+                        </label>
+                    </div>
+                    <div class="flex justify-end gap-2 pt-3">
+                        <button type="button" @click="showAddAppModal = false" class="btn btn-ghost btn-sm text-xs text-slate-400">ยกเลิก</button>
+                        <button type="submit" class="btn btn-primary btn-sm text-xs text-white">บันทึกระบบงาน</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- สคริปต์ Alpine.js ร่วมกับ SweetAlert2 -->
+    <script>
+        function adminDashboard() {
+            return {
+                activeTab: 'users',
+                showChangePwdModal: false,
+                showAddAdminModal: false,
+                showAddAppModal: false,
+
+                userSearchQuery: '',
+                selectedAppFilter: '',
+
+                metrics: {},
+                users: [],
+                apps: [],
+                logs: [],
+
+                pwdForm: { oldPassword: '', newPassword: '', confirmPassword: '' },
+                adminForm: { appId: '', username: '', password: '' },
+                appForm: { appName: '', publicDomain: '', backendUrl: '', enableMfa: true },
+
+                async initData() {
+                    try {
+                        const [mRes, uRes, aRes, lRes] = await Promise.all([
+                            fetch('/admin/api/metrics'),
+                            fetch('/admin/api/users'),
+                            fetch('/admin/api/apps'),
+                            fetch('/admin/api/audit-logs')
+                        ]);
+
+                        this.metrics = await mRes.json();
+                        this.users = await uRes.json();
+                        if (aRes.ok) this.apps = await aRes.json();
+                        this.logs = await lRes.json();
+                    } catch (err) {
+                        console.error('Error loading dashboard data:', err);
+                    }
+                },
+
+                get filteredUsers() {
+                    return this.users.filter(u => {
+                        const query = this.userSearchQuery.trim().toLowerCase();
+                        const matchesSearch = !query || 
+                            u.username.toLowerCase().includes(query) ||
+                            u.role.toLowerCase().includes(query) ||
+                            u.app_name.toLowerCase().includes(query);
+
+                        const matchesApp = !this.selectedAppFilter || u.app_id === this.selectedAppFilter;
+
+                        return matchesSearch && matchesApp;
+                    });
+                },
+
+                // ⚡ สลับโหมด Emergency MFA Bypass
+                async toggleBypass(app) {
+                    const isEnabling = !app.is_bypass_enabled;
+                    const result = await Swal.fire({
+                        title: isEnabling ? 'เปิดใช้งาน MFA Bypass (ฉุกเฉิน)?' : 'ปิดใช้งาน MFA Bypass?',
+                        text: isEnabling 
+                            ? `ผู้ใช้งานระบบ "${app.app_name}" จะสามารถเข้าสู่ระบบปลายทางได้โดยไม่ต้องกรอก MFA` 
+                            : `ระบบ "${app.app_name}" จะกลับสู่โหมดปกติที่ต้องยืนยันตัวตน MFA`,
+                        icon: isEnabling ? 'warning' : 'info',
+                        showCancelButton: true,
+                        confirmButtonColor: isEnabling ? '#d97706' : '#2563eb',
+                        cancelButtonColor: '#475569',
+                        confirmButtonText: isEnabling ? 'เปิดใช้งาน Bypass' : 'ปิดใช้งาน',
+                        cancelButtonText: 'ยกเลิก'
+                    });
+
+                    if (!result.isConfirmed) return;
+
+                    const res = await fetch(`/admin/api/apps/${app.id}/toggle-bypass`, { method: 'POST' });
+                    const data = await res.json();
+
+                    if (res.ok) {
+                        Swal.fire({
+                            icon: 'success',
+                            title: 'อัปเดตสถานะสำเร็จ',
+                            text: data.message,
+                            timer: 1500,
+                            showConfirmButton: false
+                        });
+                        await this.initData();
+                    } else {
+                        Swal.fire({ icon: 'error', title: 'เกิดข้อผิดพลาด', text: data.detail || 'ไม่สามารถเปลี่ยนสถานะ Bypass ได้' });
+                    }
+                },
+
+                async submitChangePassword() {
+                    if (this.pwdForm.newPassword !== this.pwdForm.confirmPassword) {
+                        Swal.fire({ icon: 'error', title: 'รหัสผ่านไม่ตรงกัน', text: 'รหัสผ่านใหม่และการยืนยันรหัสผ่านไม่ตรงกัน' });
+                        return;
+                    }
+
+                    const formData = new FormData();
+                    formData.append('old_password', this.pwdForm.oldPassword);
+                    formData.append('new_password', this.pwdForm.newPassword);
+                    formData.append('confirm_password', this.pwdForm.confirmPassword);
+
+                    const res = await fetch('/admin/api/change-password', { method: 'POST', body: formData });
+                    const data = await res.json();
+
+                    if (res.ok) {
+                        Swal.fire({ icon: 'success', title: 'สำเร็จ', text: data.message, timer: 1500, showConfirmButton: false });
+                        this.showChangePwdModal = false;
+                        this.metrics.must_change_password = false;
+                        this.pwdForm = { oldPassword: '', newPassword: '', confirmPassword: '' };
+                    } else {
+                        Swal.fire({ icon: 'error', title: 'เกิดข้อผิดพลาด', text: data.detail || data.message });
+                    }
+                },
+
+                async submitAddAdmin() {
+                    const formData = new FormData();
+                    formData.append('app_id', this.adminForm.appId);
+                    formData.append('username', this.adminForm.username);
+                    formData.append('password', this.adminForm.password);
+
+                    const res = await fetch('/admin/api/create-admin', { method: 'POST', body: formData });
+                    const data = await res.json();
+
+                    if (res.ok) {
+                        Swal.fire({ icon: 'success', title: 'สร้าง Admin สำเร็จ', text: data.message, timer: 1500, showConfirmButton: false });
+                        this.showAddAdminModal = false;
+                        this.adminForm = { appId: '', username: '', password: '' };
+                        await this.initData();
+                    } else {
+                        Swal.fire({ icon: 'error', title: 'เกิดข้อผิดพลาด', text: data.detail || data.message });
+                    }
+                },
+
+                async submitAddApp() {
+                    const formData = new FormData();
+                    formData.append('app_name', this.appForm.appName);
+                    formData.append('public_domain', this.appForm.publicDomain);
+                    formData.append('backend_target_url', this.appForm.backendUrl);
+                    formData.append('enable_mfa', this.appForm.enableMfa);
+
+                    const res = await fetch('/admin/api/apps', { method: 'POST', body: formData });
+                    const data = await res.json();
+
+                    if (res.ok) {
+                        Swal.fire({ icon: 'success', title: 'เพิ่มระบบงานสำเร็จ', text: data.message, timer: 1500, showConfirmButton: false });
+                        this.showAddAppModal = false;
+                        this.appForm = { appName: '', publicDomain: '', backendUrl: '', enableMfa: true };
+                        await this.initData();
+                    } else {
+                        Swal.fire({ icon: 'error', title: 'เกิดข้อผิดพลาด', text: data.detail || data.message });
+                    }
+                },
+
+                async resetMfa(user) {
+                    const result = await Swal.fire({
+                        title: `ยืนยัน Reset MFA?`,
+                        text: `คุณต้องการล้างการผูก MFA ของผู้ใช้งาน "${user.username}" ใช่หรือไม่?`,
+                        icon: 'warning',
+                        showCancelButton: true,
+                        confirmButtonColor: '#e11d48',
+                        cancelButtonColor: '#475569',
+                        confirmButtonText: 'Reset MFA',
+                        cancelButtonText: 'ยกเลิก'
+                    });
+
+                    if (!result.isConfirmed) return;
+
+                    const res = await fetch(`/admin/api/users/${user.id}/reset-mfa`, { method: 'POST' });
+                    const data = await res.json();
+
+                    if (res.ok) {
+                        Swal.fire({ icon: 'success', title: 'Reset MFA สำเร็จ', text: data.message, timer: 1500, showConfirmButton: false });
+                        await this.initData();
+                    } else {
+                        Swal.fire({ icon: 'error', title: 'เกิดข้อผิดพลาด', text: data.detail || 'ไม่สามารถ Reset MFA ได้' });
+                    }
+                },
+
+                formatDate(ts) {
+                    return ts ? new Date(ts).toLocaleString('th-TH') : '-';
+                }
+            }
+        }
+    </script>
+</body>
+</html>

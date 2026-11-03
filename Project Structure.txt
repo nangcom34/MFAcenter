@@ -1,0 +1,33 @@
+dld-mfacenter/
+├── app/
+│   ├── main.py
+│   ├── core/
+│   │   ├── config.py
+│   │   ├── database.py
+│   │   ├── redis.py
+│   │   ├── security.py
+│   │   └── rate_limiter.py
+│   ├── models/
+│   │   └── schemas.py
+│   ├── proxy/
+│   │   ├── proxy_router.py
+│   │   ├── pass_through_service.py
+│   │   └── break_glass.py
+│   ├── routers/
+│   │   ├── auth.py
+│   │   ├── admin.py
+│   │   ├── app_admin.py
+│   │   └── portal.py
+│   ├── templates/
+│   │   ├── login.html
+│   │   ├── locked.html
+│   │   ├── portal/
+│   │   └── admin/
+│   │       └── dashboard.html
+│   └── static/
+│       ├── css/
+│       └── js/
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+└── README.md

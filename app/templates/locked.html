@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="th" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <title>ระบบถูกล็อกชั่วคราว | DLD-MFAcenter</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600&display=swap" rel="stylesheet">
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center p-4">
+    <div x-data="lockoutTimer()" class="max-w-md w-full bg-slate-900 border border-rose-500/30 rounded-2xl p-8 text-center shadow-2xl">
+        <div class="inline-flex p-4 bg-rose-950/50 border border-rose-500/40 rounded-full mb-4">
+            <svg class="w-10 h-10 text-rose-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+        </div>
+        <h2 class="text-xl font-bold text-rose-400">ระงับการเข้าใช้งานชั่วคราว</h2>
+        <p class="text-sm text-slate-400 mt-2">ตรวจพบการลองกรอกรหัสผ่านผิดหลายครั้งติดต่อกัน เพื่อความปลอดภัย ระบบได้ทำการล็อก IP/บัญชีของคุณ</p>
+        
+        <div class="my-6 p-4 bg-slate-950 rounded-xl border border-slate-800">
+            <span class="text-xs text-slate-500 block mb-1">ลองใหม่อีกครั้งใน</span>
+            <span class="text-3xl font-mono font-bold text-amber-400" x-text="formatTime(seconds)"></span>
+        </div>
+
+        <button @click="location.reload()" :disabled="seconds > 0" class="w-full bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white font-medium py-2.5 rounded-lg transition-colors">
+            รีเฟรชหน้าจอ
+        </button>
+    </div>
+
+    <script>
+        function lockoutTimer() {
+            const urlParams = new URLSearchParams(window.location.search);
+            return {
+                seconds: parseInt(urlParams.get('seconds')) || 300,
+                init() {
+                    const timer = setInterval(() => {
+                        if (this.seconds > 0) this.seconds--;
+                        else clearInterval(timer);
+                    }, 1000);
+                },
+                formatTime(sec) {
+                    const m = Math.floor(sec / 60);
+                    const s = sec % 60;
+                    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+                }
+            }
+        }
+    </script>
+</body>
+</html>

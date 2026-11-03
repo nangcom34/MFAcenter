@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="th" data-theme="dark" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>เข้าสู่ระบบผู้ดูแลระบบ | DLD-MFAcenter Admin Portal</title>
+    <!-- โหลด DaisyUI CSS & Tailwind CSS CDN -->
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.14/dist/full.min.css" rel="stylesheet" type="text/css" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- โหลด Alpine.js และ SweetAlert2 -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <!-- ฟอนต์ภาษาไทย Kanit -->
+    <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <style> 
+        body { font-family: 'Kanit', sans-serif; } 
+        .swal2-popup {
+            background: rgba(15, 23, 42, 0.95) !important;
+            backdrop-filter: blur(16px);
+            border: 1px solid rgba(51, 65, 85, 0.6);
+            border-radius: 1.5rem !important;
+            color: #f8fafc !important;
+            font-family: 'Kanit', sans-serif !important;
+        }
+        .swal2-title { color: #ffffff !important; font-size: 1.25rem !important; }
+        .swal2-html-container { color: #94a3b8 !important; font-size: 0.875rem !important; }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-slate-950 via-slate-900 to-blue-950 min-h-screen flex items-center justify-center p-4 relative overflow-hidden">
+
+    <!-- เอฟเฟกต์แสงไฟเรืองแสงด้านหลัง (Background Ambient Lighting) -->
+    <div class="absolute -top-40 -left-40 w-96 h-96 bg-blue-600/20 rounded-full blur-[128px] pointer-events-none"></div>
+    <div class="absolute -bottom-40 -right-40 w-96 h-96 bg-indigo-600/20 rounded-full blur-[128px] pointer-events-none"></div>
+
+    <!-- การ์ด Admin Login สไตล์ DaisyUI + Glassmorphism -->
+    <div x-data="adminLoginForm()" class="card w-full max-w-md bg-slate-900/40 backdrop-blur-2xl border border-slate-700/30 shadow-2xl shadow-blue-950/60 relative z-10">
+        <div class="card-body p-8 space-y-4">
+            
+            <div class="text-center space-y-2">
+                <div class="inline-flex p-3.5 bg-blue-600/20 text-blue-400 border border-blue-500/30 rounded-2xl shadow-inner mb-1">
+                    <span class="text-3xl">🛡️</span>
+                </div>
+                <h1 class="text-2xl font-bold tracking-tight text-white">DLD-MFAcenter</h1>
+                <p class="text-xs text-slate-400">เข้าสู่ระบบผู้ดูแลระบบ (Admin Portal)</p>
+            </div>
+
+            <form @submit.prevent="submitLogin" class="space-y-4 pt-2">
+                <div class="form-control">
+                    <label class="label">
+                        <span class="label-text text-xs font-medium text-slate-300">ชื่อผู้ใช้งาน (Username)</span>
+                    </label>
+                    <input type="text" x-model="form.username" required placeholder="ระบุ Username ผู้ดูแลระบบ" class="input input-bordered w-full bg-slate-950/50 border-slate-800 text-sm focus:input-primary transition-all">
+                </div>
+
+                <div class="form-control">
+                    <label class="label">
+                        <span class="label-text text-xs font-medium text-slate-300">รหัสผ่าน (Password)</span>
+                    </label>
+                    <input type="password" x-model="form.password" required placeholder="ระบุ Password" class="input input-bordered w-full bg-slate-950/50 border-slate-800 text-sm focus:input-primary transition-all">
+                </div>
+
+                <div class="form-control">
+                    <label class="label">
+                        <span class="label-text text-xs font-medium text-slate-300">รหัสยืนยัน TOTP 6 หลัก</span>
+                    </label>
+                    <input type="text" x-model="form.totp_code" maxlength="6" required placeholder="000000" class="input input-bordered w-full text-center font-mono tracking-[0.3em] text-xl bg-slate-950/50 border-slate-800 focus:input-primary transition-all">
+                </div>
+
+                <button type="submit" :disabled="loading" class="btn btn-primary w-full shadow-lg shadow-blue-600/30 mt-2 text-white">
+                    <span x-show="!loading">เข้าสู่ระบบผู้ดูแลระบบ →</span>
+                    <span x-show="loading" class="loading loading-spinner loading-sm"></span>
+                </button>
+            </form>
+
+            <div class="text-center pt-3 border-t border-slate-800/40">
+                <p class="text-[11px] text-slate-500">ศูนย์เทคโนโลยีสารสนเทศและการสื่อสาร กรมปศุสัตว์</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- สคริปต์ Alpine.js ร่วมกับ SweetAlert2 -->
+    <script>
+        function adminLoginForm() {
+            return {
+                form: { username: '', password: '', totp_code: '' },
+                loading: false,
+
+                showError(message) {
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'เข้าสู่ระบบไม่สำเร็จ',
+                        text: message,
+                        confirmButtonColor: '#2563eb',
+                        confirmButtonText: 'ตกลง'
+                    });
+                },
+
+                async submitLogin() {
+                    this.loading = true;
+
+                    const formData = new FormData();
+                    formData.append('username', this.form.username);
+                    formData.append('password', this.form.password);
+                    formData.append('totp_code', this.form.totp_code);
+
+                    try {
+                        const res = await fetch('/admin/login', { method: 'POST', body: formData });
+                        const data = await res.json();
+
+                        if (res.ok && data.status === 'success') {
+                            Swal.fire({
+                                icon: 'success',
+                                title: 'เข้าสู่ระบบสำเร็จ',
+                                text: 'กำลังนำท่านเข้าสู่ Admin Portal...',
+                                timer: 1200,
+                                showConfirmButton: false
+                            }).then(() => {
+                                window.location.href = data.redirect_url || '/admin';
+                            });
+                        } else {
+                            this.showError(data.message || 'Username, Password หรือรหัส TOTP ไม่ถูกต้อง');
+                        }
+                    } catch (err) {
+                        this.showError('ไม่สามารถเชื่อมต่อเครื่องแม่ข่ายได้');
+                    } finally {
+                        this.loading = false;
+                    }
+                }
+            }
+        }
+    </script>
+</body>
+</html>
