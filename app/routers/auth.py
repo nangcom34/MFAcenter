@@ -1,133 +1,175 @@
-# app/routers/auth.py
-from fastapi import APIRouter, Depends, HTTPException, Request, Form
-from fastapi.responses import JSONResponse
+import uuid
+import pyotp
+import urllib.parse
+from datetime import datetime
+from typing import Dict, Any
+
+import bcrypt
+from fastapi import APIRouter, Depends, HTTPException, Form, Response, Request
+from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-import pyotp
-import qrcode
-import io
-import base64
 
 from app.core.database import get_db
-from app.core.redis import get_redis
-from app.core.security import verify_totp_code
-from app.models.schemas import TargetApplication, User, AuditAction
-from app.proxy.pass_through_service import LegacyPassThroughService
-from app.proxy.proxy_router import audit_logger
+from app.models.schemas import User, TargetApplication, AuditLog, AuditAction
 
-router = APIRouter(prefix="/auth", tags=["Authentication"])
+# ------------------------------------------------------------------------------
+# 🛠️ Security Helpers
+# ------------------------------------------------------------------------------
 
+
+# [ฟังก์ชันที่ 1] ตรวจสอบรหัสผ่านของ User ด้วย bcrypt โดยตรง
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    if not plain_password or not hashed_password:
+        return False
+    pwd_bytes = plain_password.encode("utf-8")[:72]
+    try:
+        return bcrypt.checkpw(pwd_bytes, hashed_password.encode("utf-8"))
+    except Exception:
+        return False
+
+
+# ------------------------------------------------------------------------------
+# 🚀 APIRouter Setup
+# ------------------------------------------------------------------------------
+router = APIRouter(prefix="/auth", tags=["User Auth"])
+temp_user_tokens: Dict[str, Dict[str, Any]] = {}
+
+# ------------------------------------------------------------------------------
+# 🌐 User Authentication Endpoints
+# ------------------------------------------------------------------------------
+
+
+# [ฟังก์ชันที่ 2] User Step 1 - ตรวจสอบ Username, Password, สถานะ MFA Bypass และออก QR Code
 @router.post("/verify-step1")
-async def verify_step1_credentials(
+async def user_verify_step1(
     request: Request,
     username: str = Form(...),
     password: str = Form(...),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
-    host = request.headers.get("host", "").split(":")[0]
-    
-    app = await db.scalar(select(TargetApplication).where(TargetApplication.public_domain == host))
-    if not app:
-        return JSONResponse({"status": "failed", "message": "ไม่พบข้อมูลระบบงานปลายทางในระบบ"}, status_code=404)
+    host_header = request.headers.get("host", "").split(":")[0]
 
-    client_ip = request.client.host if request.client else "127.0.0.1"
-    user_agent = request.headers.get("user-agent", "")
+    result = await db.execute(select(User).where(User.username == username))
+    user_obj = result.scalar_one_or_none()
 
-    user = await db.scalar(select(User).where(User.username == username.strip()))
-    
-    # ตรวจสอบรหัสผ่านผ่าน Pass-through Auth หรือใช้บัญชีทดสอบ testuser
-    legacy_auth_success = await LegacyPassThroughService.verify_legacy_credentials(app, username.strip(), password)
+    if not user_obj:
+        raise HTTPException(status_code=401, detail="Username หรือ Password ไม่ถูกต้อง")
 
-    if not legacy_auth_success and not (user and password == "pass1234"):
-        await audit_logger(
-            db=db, app_id=app.id, app_domain=app.public_domain,
-            client_ip=client_ip, username=username.strip(),
-            action=AuditAction.LOGIN_FAILED.value, user_agent=user_agent
-        )
-        return JSONResponse({"status": "failed", "message": "Username หรือ Password ไม่ถูกต้อง"}, status_code=401)
-
-    redis = get_redis()
-    is_enrolled = bool(await redis.get(f"totp_enrolled:{username.strip()}"))
-    
-    qr_code_url = ""
-    totp_secret = ""
-
-    if user and user.totp_secret:
-        totp_secret = user.totp_secret
-        is_enrolled = True
-    else:
-        totp_secret = pyotp.random_base32()
-        totp_uri = pyotp.totp.TOTP(totp_secret).provisioning_uri(
-            name=username.strip(),
-            issuer_name=f"DLD-MFA ({app.app_name})"
-        )
-        img = qrcode.make(totp_uri)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        qr_code_url = f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('utf-8')}"
-        
-        await redis.setex(f"temp_totp_secret:{username.strip()}", 600, totp_secret)
-
-    return JSONResponse({
-        "status": "success",
-        "is_enrolled": is_enrolled,
-        "qr_code_url": qr_code_url,
-        "totp_secret": totp_secret
-    })
-
-@router.post("/verify-step2")
-async def verify_step2_credentials(
-    request: Request,
-    username: str = Form(...),
-    totp_code: str = Form(...),
-    db: AsyncSession = Depends(get_db)
-):
-    host = request.headers.get("host", "").split(":")[0]
-    app = await db.scalar(select(TargetApplication).where(TargetApplication.public_domain == host))
-    if not app:
-        return JSONResponse({"status": "failed", "message": "ไม่พบข้อมูลระบบงาน"}, status_code=404)
-
-    redis = get_redis()
-    client_ip = request.client.host if request.client else "127.0.0.1"
-    user_agent = request.headers.get("user-agent", "")
-
-    user = await db.scalar(select(User).where(User.username == username.strip()))
-    totp_secret = user.totp_secret if user and user.totp_secret else await redis.get(f"temp_totp_secret:{username.strip()}")
-
-    if not totp_secret:
-        return JSONResponse({"status": "failed", "message": "เซสชันหมดอายุ กรุณาล็อกอินใหม่อีกครั้ง"}, status_code=400)
-
-    if not verify_totp_code(totp_secret, totp_code.strip()):
-        await audit_logger(
-            db=db, app_id=app.id, app_domain=app.public_domain,
-            client_ip=client_ip, username=username.strip(),
-            action=AuditAction.TOTP_VERIFY_FAILED.value, user_agent=user_agent
-        )
-        return JSONResponse({"status": "failed", "message": "รหัส TOTP 6 หลักไม่ถูกต้อง"}, status_code=401)
-
-    if user:
-        user.totp_secret = totp_secret
-        await db.commit()
-    
-    await redis.set(f"totp_enrolled:{username.strip()}", "1")
-    await redis.delete(f"temp_totp_secret:{username.strip()}")
-
-    import uuid as session_uuid
-    session_id = str(session_uuid.uuid4())
-    await redis.setex(f"session:{session_id}", 28800, username.strip())
-
-    await audit_logger(
-        db=db, app_id=app.id, app_domain=app.public_domain,
-        client_ip=client_ip, username=username.strip(),
-        action=AuditAction.LOGIN_SUCCESS.value, user_agent=user_agent
+    current_hash = (
+        getattr(user_obj, "password_hash", None)
+        or getattr(user_obj, "hashed_password", None)
+        or getattr(user_obj, "password", None)
     )
 
-    response = JSONResponse({"status": "success", "message": "ยืนยันตัวตนสำเร็จ"})
+    if not current_hash or not verify_password(password, current_hash):
+        raise HTTPException(status_code=401, detail="Username หรือ Password ไม่ถูกต้อง")
+
+    # ตรวจสอบสถานะ MFA Bypass ของแอปปลายทาง
+    app_res = await db.execute(
+        select(TargetApplication).where(TargetApplication.id == user_obj.app_id)
+    )
+    app_obj = app_res.scalar_one_or_none()
+
+    if app_obj and getattr(app_obj, "is_bypass_enabled", False):
+        return {"success": True, "bypass": True, "redirect_url": "/"}
+
+    existing_secret = getattr(user_obj, "totp_secret", None)
+    is_first_time = not bool(existing_secret)
+
+    totp_secret = pyotp.random_base32() if is_first_time else existing_secret
+    totp = pyotp.TOTP(totp_secret)
+    app_title = app_obj.app_name if app_obj else "DLD-MFAcenter"
+    provisioning_uri = totp.provisioning_uri(
+        name=user_obj.username, issuer_name=f"DLD-MFA ({app_title})"
+    )
+    qr_code_url = f"https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={urllib.parse.quote(provisioning_uri)}"
+
+    temp_token = str(uuid.uuid4())
+    temp_user_tokens[temp_token] = {
+        "user_id": str(user_obj.id),
+        "username": user_obj.username,
+        "totp_secret": totp_secret,
+        "is_first_time": is_first_time,
+        "app_domain": host_header,
+        "created_at": datetime.utcnow(),
+    }
+
+    return {
+        "success": True,
+        "temp_token": temp_token,
+        "is_first_time": is_first_time,
+        "totp_secret": totp_secret if is_first_time else None,
+        "qr_code_url": qr_code_url if is_first_time else None,
+    }
+
+
+# [ฟังก์ชันที่ 3] User Step 2 - ยืนยันรหัส OTP 6 หลัก และลงบันทึก Audit Log
+@router.post("/verify-step2")
+async def user_verify_step2(
+    request: Request,
+    response: Response,
+    temp_token: str = Form(default=""),
+    totp_code: str = Form(default=""),
+    db: AsyncSession = Depends(get_db),
+):
+    if not temp_token or not totp_code:
+        raise HTTPException(
+            status_code=400, detail="กรุณากรอกรหัส OTP 6 หลักให้ครบถ้วน"
+        )
+
+    token_data = temp_user_tokens.get(temp_token)
+    if not token_data:
+        raise HTTPException(
+            status_code=401, detail="Session หมดอายุ กรุณาเข้าสู่ระบบใหม่อีกครั้ง"
+        )
+
+    totp_secret = token_data["totp_secret"]
+    totp = pyotp.TOTP(totp_secret)
+
+    if not totp.verify(totp_code):
+        raise HTTPException(
+            status_code=400, detail="รหัส OTP 6 หลักไม่ถูกต้องหรือหมดอายุ"
+        )
+
+    if token_data.get("is_first_time"):
+        user_res = await db.execute(
+            select(User).where(User.id == token_data["user_id"])
+        )
+        user_obj = user_res.scalar_one_or_none()
+        if user_obj:
+            user_obj.totp_secret = totp_secret
+            if hasattr(user_obj, "is_mfa_enrolled"):
+                user_obj.is_mfa_enrolled = True
+            await db.commit()
+
+    # บันทึก Audit Log การเข้าสู่ระบบสำเร็จ
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    audit_log = AuditLog(
+        timestamp=datetime.utcnow(),
+        app_domain=token_data.get("app_domain", "-"),
+        client_ip=client_ip,
+        username=token_data["username"],
+        action=getattr(AuditAction, "MFA_VERIFIED", "MFA_VERIFIED"),
+    )
+    db.add(audit_log)
+    await db.commit()
+
+    del temp_user_tokens[temp_token]
+
     response.set_cookie(
-        key=f"dld_session_{app.id}",
-        value=session_id,
+        key="user_session",
+        value=token_data["user_id"],
         httponly=True,
         samesite="lax",
-        max_age=28800
+        path="/",
     )
-    return response
+    return {"success": True, "redirect_url": "/"}
+
+
+# [ฟังก์ชันที่ 4] API ออกจากระบบผู้ใช้งานทั่วไป (User Logout)
+@router.get("/logout", response_class=RedirectResponse)
+async def user_logout(response: Response):
+    res = RedirectResponse(url="/", status_code=302)
+    res.delete_cookie(key="user_session", path="/")
+    return res

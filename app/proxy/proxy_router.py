@@ -11,6 +11,13 @@ from app.core.database import get_db
 from app.core.redis import get_redis
 from app.models.schemas import TargetApplication, AuditLog
 
+from pathlib import Path
+from fastapi.templating import Jinja2Templates
+
+# กำหนด Absolute Path ล็อกไปยังโฟลเดอร์ app/templates โดยตรง
+BASE_DIR = Path(__file__).resolve().parent.parent
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 
@@ -47,12 +54,13 @@ async def forward_to_backend(request: Request, backend_url: str):
     if query:
         target_full_url += f"?{query}"
 
+    # ดึง Headers จาก Request และลบ Host header ออกป้องกันความขัดแย้ง
     headers = dict(request.headers)
     headers.pop("host", None)
 
     body = await request.body()
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+    async with httpx.AsyncClient(follow_redirects=True, timeout=10.0, verify=False) as client:
         try:
             resp = await client.request(
                 method=request.method,
@@ -62,18 +70,21 @@ async def forward_to_backend(request: Request, backend_url: str):
                 cookies=request.cookies
             )
             
-            excluded_headers = ["content-encoding", "content-length", "transfer-encoding", "connection"]
-            response_headers = [
-                (name, value) for name, value in resp.headers.raw 
-                if name.decode("utf-8").lower() not in excluded_headers
-            ]
+            # กรอง Hop-by-hop headers และดึงแบบ str (resp.headers.items())
+            excluded_headers = {"content-encoding", "content-length", "transfer-encoding", "connection"}
+            
+            response_headers = {}
+            for key, value in resp.headers.items():
+                if key.lower() not in excluded_headers:
+                    response_headers[key] = value
 
             return Response(
                 content=resp.content,
                 status_code=resp.status_code,
-                headers=dict(response_headers)
+                headers=response_headers
             )
         except Exception as e:
+            print(f"[FORWARD ERROR] ไม่สามารถเชื่อมต่อปลายทาง {target_full_url}: {str(e)}")
             return Response(content=f"Backend Gateway Error: {str(e)}", status_code=502)
 
 # Dynamic Proxy Handler

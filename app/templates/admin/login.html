@@ -1,129 +1,296 @@
 <!DOCTYPE html>
-<html lang="th" data-theme="dark" class="dark">
+<html lang="th" data-theme="light" class="transition-colors duration-300">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>เข้าสู่ระบบผู้ดูแลระบบ | DLD-MFAcenter Admin Portal</title>
-    <!-- โหลด DaisyUI CSS & Tailwind CSS CDN -->
+    <title>Admin Login | DLD-MFAcenter</title>
+
     <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.14/dist/full.min.css" rel="stylesheet" type="text/css" />
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- โหลด Alpine.js และ SweetAlert2 -->
+    <script>
+        tailwind.config = { darkMode: ['class', '[data-theme="dark"]'] }
+    </script>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.1/anime.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <!-- ฟอนต์ภาษาไทย Kanit -->
-    <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600&display=swap" rel="stylesheet">
-    <style> 
-        body { font-family: 'Kanit', sans-serif; } 
-        .swal2-popup {
-            background: rgba(15, 23, 42, 0.95) !important;
-            backdrop-filter: blur(16px);
-            border: 1px solid rgba(51, 65, 85, 0.6);
-            border-radius: 1.5rem !important;
-            color: #f8fafc !important;
-            font-family: 'Kanit', sans-serif !important;
+    <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Kanit', sans-serif; }
+        .depth-card {
+            box-shadow: 0 20px 50px -10px rgba(15, 23, 42, 0.12), 0 10px 25px -5px rgba(15, 23, 42, 0.04);
         }
-        .swal2-title { color: #ffffff !important; font-size: 1.25rem !important; }
-        .swal2-html-container { color: #94a3b8 !important; font-size: 0.875rem !important; }
+        [data-theme="dark"] .depth-card {
+            box-shadow: 0 20px 50px -10px rgba(0, 0, 0, 0.7), 0 10px 25px -5px rgba(0, 0, 0, 0.4);
+        }
+        .otp-input {
+            width: 2.5rem;
+            height: 3rem;
+            text-align: center;
+            font-size: 1.25rem;
+            font-weight: 700;
+            border-radius: 0.75rem;
+            transition: all 0.2s ease;
+        }
+        @media (min-width: 640px) {
+            .otp-input { width: 3rem; height: 3.5rem; font-size: 1.5rem; }
+        }
     </style>
 </head>
-<body class="bg-gradient-to-br from-slate-950 via-slate-900 to-blue-950 min-h-screen flex items-center justify-center p-4 relative overflow-hidden">
+<body class="bg-gradient-to-br from-slate-100 via-blue-50/60 to-slate-200 dark:from-slate-950 dark:via-slate-900 dark:to-blue-950 min-h-screen flex items-center justify-center p-4 relative overflow-hidden transition-colors duration-300">
 
-    <!-- เอฟเฟกต์แสงไฟเรืองแสงด้านหลัง (Background Ambient Lighting) -->
-    <div class="absolute -top-40 -left-40 w-96 h-96 bg-blue-600/20 rounded-full blur-[128px] pointer-events-none"></div>
-    <div class="absolute -bottom-40 -right-40 w-96 h-96 bg-indigo-600/20 rounded-full blur-[128px] pointer-events-none"></div>
+    <div class="fixed -top-32 -left-32 w-96 h-96 bg-blue-500/20 dark:bg-blue-600/15 rounded-full blur-[140px] pointer-events-none"></div>
+    <div class="fixed -bottom-32 -right-32 w-96 h-96 bg-indigo-500/20 dark:bg-indigo-600/15 rounded-full blur-[140px] pointer-events-none"></div>
 
-    <!-- การ์ด Admin Login สไตล์ DaisyUI + Glassmorphism -->
-    <div x-data="adminLoginForm()" class="card w-full max-w-md bg-slate-900/40 backdrop-blur-2xl border border-slate-700/30 shadow-2xl shadow-blue-950/60 relative z-10">
-        <div class="card-body p-8 space-y-4">
+    <div x-data="adminLoginComponent()" x-init="init()" class="w-full max-w-md relative z-10">
+        <div class="card depth-card bg-white/80 dark:bg-slate-900/60 backdrop-blur-2xl border border-white/60 dark:border-slate-800/60 rounded-3xl p-6 sm:p-8 space-y-6">
             
             <div class="text-center space-y-2">
-                <div class="inline-flex p-3.5 bg-blue-600/20 text-blue-400 border border-blue-500/30 rounded-2xl shadow-inner mb-1">
-                    <span class="text-3xl">🛡️</span>
+                <div class="inline-flex items-center justify-center w-16 h-16 bg-blue-600/10 dark:bg-blue-600/20 text-blue-600 dark:text-blue-400 border border-blue-500/20 rounded-3xl shadow-inner mb-1 text-3xl">
+                    🛡️
                 </div>
-                <h1 class="text-2xl font-bold tracking-tight text-white">DLD-MFAcenter</h1>
-                <p class="text-xs text-slate-400">เข้าสู่ระบบผู้ดูแลระบบ (Admin Portal)</p>
+                <h1 class="text-2xl font-extrabold text-slate-800 dark:text-white tracking-tight">DLD-MFAcenter</h1>
+                <p class="text-xs text-slate-500 dark:text-slate-400" x-text="step === 1 ? 'ระบบเข้าสู่ระบบสำหรับผู้ดูแลระบบ (Admin Portal)' : (isFirstTime ? 'ตั้งค่าและผูก MFA ครั้งแรก' : 'ยืนยันตัวตนด้วยรหัส OTP 6 หลัก')"></p>
             </div>
 
-            <form @submit.prevent="submitLogin" class="space-y-4 pt-2">
-                <div class="form-control">
-                    <label class="label">
-                        <span class="label-text text-xs font-medium text-slate-300">ชื่อผู้ใช้งาน (Username)</span>
-                    </label>
-                    <input type="text" x-model="form.username" required placeholder="ระบุ Username ผู้ดูแลระบบ" class="input input-bordered w-full bg-slate-950/50 border-slate-800 text-sm focus:input-primary transition-all">
+            <!-- STEP 1: Username & Password -->
+            <div id="step1-container" x-show="step === 1" class="space-y-4">
+                <form @submit.prevent="submitStep1" class="space-y-4">
+                    <div class="form-control space-y-1">
+                        <label class="label p-0"><span class="label-text text-xs font-semibold text-slate-600 dark:text-slate-300">ชื่อผู้ใช้งาน (Username)</span></label>
+                        <input type="text" x-model="form.username" required placeholder="admin_username" class="input input-bordered bg-slate-50 dark:bg-slate-950/60 border-slate-300 dark:border-slate-800 text-sm text-slate-800 dark:text-white focus:input-primary rounded-2xl">
+                    </div>
+
+                    <div class="form-control space-y-1">
+                        <label class="label p-0"><span class="label-text text-xs font-semibold text-slate-600 dark:text-slate-300">รหัสผ่าน (Password)</span></label>
+                        <input type="password" x-model="form.password" required placeholder="••••••••" class="input input-bordered bg-slate-50 dark:bg-slate-950/60 border-slate-300 dark:border-slate-800 text-sm text-slate-800 dark:text-white focus:input-primary rounded-2xl">
+                    </div>
+
+                    <button type="submit" :disabled="isLoading" class="btn btn-primary w-full text-white rounded-2xl font-semibold shadow-lg shadow-blue-500/20 mt-2">
+                        <span x-show="!isLoading" class="flex items-center gap-2">ถัดไป ➔</span>
+                        <span x-show="isLoading" class="loading loading-spinner loading-sm"></span>
+                    </button>
+                </form>
+            </div>
+
+            <!-- STEP 2: TOTP Verification & QR Code Enrolment -->
+            <div id="step2-container" x-show="step === 2" style="display: none;" class="space-y-5">
+                
+                <!-- 📱 แสดง QR Code กรณีเข้าใช้งานครั้งแรก -->
+                <div x-show="isFirstTime" class="bg-blue-50/80 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/60 p-4 rounded-2xl text-center space-y-3">
+                    <div class="badge badge-warning text-[11px] font-bold">📲 ผูกแอป Authenticator (ครั้งแรก)</div>
+                    <p class="text-xs text-slate-600 dark:text-slate-300">สแกน QR Code นี้ด้วยแอป Google Authenticator หรือ Authy</p>
+                    
+                    <div class="flex justify-center my-2">
+                        <img :src="qrCodeUrl" alt="MFA QR Code" class="w-40 h-40 rounded-xl border border-white shadow-md">
+                    </div>
+
+                    <div class="text-[11px] text-slate-500 dark:text-slate-400">
+                        คีย์สำหรับป้อนด้วยตนเอง: <br>
+                        <strong class="font-mono text-blue-600 dark:text-blue-400 text-xs tracking-wider select-all" x-text="totpSecret"></strong>
+                    </div>
                 </div>
 
-                <div class="form-control">
-                    <label class="label">
-                        <span class="label-text text-xs font-medium text-slate-300">รหัสผ่าน (Password)</span>
-                    </label>
-                    <input type="password" x-model="form.password" required placeholder="ระบุ Password" class="input input-bordered w-full bg-slate-950/50 border-slate-800 text-sm focus:input-primary transition-all">
+                <div class="text-center space-y-1">
+                    <p class="text-xs font-medium text-slate-600 dark:text-slate-300">
+                        กรอกรหัสยืนยัน 6 หลักจากแอป Authenticator
+                    </p>
                 </div>
 
-                <div class="form-control">
-                    <label class="label">
-                        <span class="label-text text-xs font-medium text-slate-300">รหัสยืนยัน TOTP 6 หลัก</span>
-                    </label>
-                    <input type="text" x-model="form.totp_code" maxlength="6" required placeholder="000000" class="input input-bordered w-full text-center font-mono tracking-[0.3em] text-xl bg-slate-950/50 border-slate-800 focus:input-primary transition-all">
+                <!-- OTP Input 6 Digits -->
+                <div class="flex justify-center items-center gap-2 sm:gap-2.5" @paste="handlePaste">
+                    <template x-for="(digit, index) in otp" :key="index">
+                        <input 
+                            :id="'otp-' + index"
+                            type="text" 
+                            maxlength="1" 
+                            inputmode="numeric"
+                            pattern="[0-9]*"
+                            x-model="otp[index]"
+                            @input="handleInput(index, $event)"
+                            @keydown.backspace="handleBackspace(index, $event)"
+                            class="otp-input input input-bordered bg-slate-50 dark:bg-slate-950/60 border-slate-300 dark:border-slate-800 text-slate-800 dark:text-white focus:input-primary focus:scale-105 shadow-inner"
+                        />
+                    </template>
                 </div>
 
-                <button type="submit" :disabled="loading" class="btn btn-primary w-full shadow-lg shadow-blue-600/30 mt-2 text-white">
-                    <span x-show="!loading">เข้าสู่ระบบผู้ดูแลระบบ →</span>
-                    <span x-show="loading" class="loading loading-spinner loading-sm"></span>
+                <div class="space-y-2 pt-1">
+                    <button @click="submitStep2" :disabled="isLoading || otpCode.length < 6" class="btn btn-success w-full text-white rounded-2xl font-semibold shadow-lg shadow-emerald-500/20">
+                        <span x-show="!isLoading" class="flex items-center gap-2">🔒 ยืนยันตัวตน และเข้าสู่ระบบ</span>
+                        <span x-show="isLoading" class="loading loading-spinner loading-sm"></span>
+                    </button>
+
+                    <button @click="backToStep1" type="button" class="btn btn-ghost btn-sm w-full text-xs text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl">
+                        ← ย้อนกลับไปกรอกรหัสผ่าน
+                    </button>
+                </div>
+            </div>
+
+            <div class="pt-4 border-t border-slate-200/60 dark:border-slate-800/60 flex justify-between items-center text-xs text-slate-400">
+                <span>DLD-MFAcenter &copy; 2026</span>
+                <button @click="toggleTheme" class="btn btn-xs btn-ghost gap-1.5 text-slate-600 dark:text-slate-300">
+                    <span x-show="theme === 'light'">☀️ สว่าง</span>
+                    <span x-show="theme === 'dark'">🌙 มืด</span>
                 </button>
-            </form>
-
-            <div class="text-center pt-3 border-t border-slate-800/40">
-                <p class="text-[11px] text-slate-500">ศูนย์เทคโนโลยีสารสนเทศและการสื่อสาร กรมปศุสัตว์</p>
             </div>
+
         </div>
     </div>
 
-    <!-- สคริปต์ Alpine.js ร่วมกับ SweetAlert2 -->
     <script>
-        function adminLoginForm() {
+        function adminLoginComponent() {
             return {
-                form: { username: '', password: '', totp_code: '' },
-                loading: false,
+                theme: localStorage.getItem('dld_theme') || 'light',
+                step: 1,
+                isLoading: false,
+                isFirstTime: false,
+                tempToken: '',
+                totpSecret: '',
+                qrCodeUrl: '',
+                form: { username: '', password: '' },
+                otp: ['', '', '', '', '', ''],
 
-                showError(message) {
-                    Swal.fire({
-                        icon: 'error',
-                        title: 'เข้าสู่ระบบไม่สำเร็จ',
-                        text: message,
-                        confirmButtonColor: '#2563eb',
-                        confirmButtonText: 'ตกลง'
+                get otpCode() { return this.otp.join(''); },
+
+                init() { document.documentElement.setAttribute('data-theme', this.theme); },
+
+                toggleTheme() {
+                    this.theme = this.theme === 'light' ? 'dark' : 'light';
+                    localStorage.setItem('dld_theme', this.theme);
+                    document.documentElement.setAttribute('data-theme', this.theme);
+                },
+
+                animateToStep2() {
+                    anime({
+                        targets: '#step1-container',
+                        opacity: [1, 0],
+                        translateY: [0, -15],
+                        duration: 250,
+                        easing: 'easeInCubic',
+                        complete: () => {
+                            this.step = 2;
+                            this.$nextTick(() => {
+                                anime({
+                                    targets: '#step2-container',
+                                    opacity: [0, 1],
+                                    translateY: [15, 0],
+                                    duration: 350,
+                                    easing: 'easeOutCubic'
+                                });
+                                document.getElementById('otp-0')?.focus();
+                            });
+                        }
                     });
                 },
 
-                async submitLogin() {
-                    this.loading = true;
+                backToStep1() {
+                    anime({
+                        targets: '#step2-container',
+                        opacity: [1, 0],
+                        translateY: [0, 15],
+                        duration: 250,
+                        easing: 'easeInCubic',
+                        complete: () => {
+                            this.step = 1;
+                            this.otp = ['', '', '', '', '', ''];
+                            this.$nextTick(() => {
+                                anime({
+                                    targets: '#step1-container',
+                                    opacity: [0, 1],
+                                    translateY: [-15, 0],
+                                    duration: 350,
+                                    easing: 'easeOutCubic'
+                                });
+                            });
+                        }
+                    });
+                },
 
-                    const formData = new FormData();
-                    formData.append('username', this.form.username);
-                    formData.append('password', this.form.password);
-                    formData.append('totp_code', this.form.totp_code);
-
+                async submitStep1() {
+                    this.isLoading = true;
                     try {
-                        const res = await fetch('/admin/login', { method: 'POST', body: formData });
+                        const formData = new FormData();
+                        formData.append('username', this.form.username);
+                        formData.append('password', this.form.password);
+
+                        const res = await fetch('/admin/api/login-step1', { method: 'POST', body: formData });
                         const data = await res.json();
 
-                        if (res.ok && data.status === 'success') {
-                            Swal.fire({
-                                icon: 'success',
-                                title: 'เข้าสู่ระบบสำเร็จ',
-                                text: 'กำลังนำท่านเข้าสู่ Admin Portal...',
-                                timer: 1200,
-                                showConfirmButton: false
-                            }).then(() => {
-                                window.location.href = data.redirect_url || '/admin';
-                            });
+                        if (res.ok) {
+                            this.tempToken = data.temp_token;
+                            this.isFirstTime = data.is_first_time;
+                            this.totpSecret = data.totp_secret || '';
+                            this.qrCodeUrl = data.qr_code_url || '';
+                            this.animateToStep2();
                         } else {
-                            this.showError(data.message || 'Username, Password หรือรหัส TOTP ไม่ถูกต้อง');
+                            Swal.fire({ icon: 'error', title: 'เข้าสู่ระบบไม่สำเร็จ', text: data.detail || 'Username หรือ Password ไม่ถูกต้อง' });
                         }
                     } catch (err) {
-                        this.showError('ไม่สามารถเชื่อมต่อเครื่องแม่ข่ายได้');
+                        Swal.fire({ icon: 'error', title: 'ข้อผิดพลาดเครือข่าย', text: 'ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้' });
                     } finally {
-                        this.loading = false;
+                        this.isLoading = false;
+                    }
+                },
+
+                async submitStep2() {
+                    if (this.otpCode.length < 6) return;
+                    this.isLoading = true;
+
+                    try {
+                        const formData = new FormData();
+                        formData.append('temp_token', this.tempToken);
+                        formData.append('totp_code', this.otpCode);
+
+                        const res = await fetch('/admin/api/login-step2', { method: 'POST', body: formData });
+                        const data = await res.json();
+
+                        if (res.ok) {
+                            window.location.href = data.redirect_url || '/admin/dashboard';
+                        } else {
+                            Swal.fire({ icon: 'error', title: 'รหัส MFA ไม่ถูกต้อง', text: data.detail || 'กรุณาตรวจสอบรหัส OTP 6 หลักอีกครั้ง' });
+                            this.otp = ['', '', '', '', '', ''];
+                            document.getElementById('otp-0')?.focus();
+                        }
+                    } catch (err) {
+                        Swal.fire({ icon: 'error', title: 'ข้อผิดพลาดเครือข่าย', text: 'ไม่สามารถยืนยันตัวตนได้' });
+                    } finally {
+                        this.isLoading = false;
+                    }
+                },
+
+                handleInput(index, event) {
+                    const val = event.target.value.replace(/[^0-9]/g, '');
+                    this.otp[index] = val;
+
+                    if (val && index < 5) {
+                        const nextInput = document.getElementById(`otp-${index + 1}`);
+                        if (nextInput) nextInput.focus();
+                    }
+
+                    if (this.otpCode.length === 6) {
+                        this.submitStep2();
+                    }
+                },
+
+                handleBackspace(index, event) {
+                    if (!this.otp[index] && index > 0) {
+                        const prevInput = document.getElementById(`otp-${index - 1}`);
+                        if (prevInput) {
+                            prevInput.focus();
+                            this.otp[index - 1] = '';
+                        }
+                    }
+                },
+
+                handlePaste(event) {
+                    event.preventDefault();
+                    const pasteData = (event.clipboardData || window.clipboardData).getData('text').trim().replace(/[^0-9]/g, '');
+                    if (pasteData.length >= 6) {
+                        for (let i = 0; i < 6; i++) {
+                            this.otp[i] = pasteData[i];
+                        }
+                        document.getElementById('otp-5')?.focus();
+                        this.submitStep2();
                     }
                 }
             }

@@ -1,496 +1,621 @@
-# app/routers/admin.py
-from fastapi import APIRouter, Depends, HTTPException, Request, Form, status
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+import uuid
+import urllib.parse
+from datetime import datetime, timedelta
+from typing import Optional, List, Dict, Any
+
+import bcrypt
+import pyotp
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Form, Response
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, desc, or_
-from sqlalchemy.orm import selectinload
-import uuid
-import secrets
+from sqlalchemy import select, func, update, delete, String
 
-from app.core.database import get_db
-from app.core.redis import get_redis
-from app.core.config import settings
-from app.core.security import verify_password, verify_totp_code, hash_password
-from app.models.schemas import TargetApplication, AuditLog, User, UserRole
-from app.proxy.proxy_router import audit_logger
+# ------------------------------------------------------------------------------
+# 🔑 Safe Fallback Imports (สำหรับ Database Connection, Dependencies & Models)
+# ------------------------------------------------------------------------------
+try:
+    from app.core.database import get_db
+except (ImportError, ModuleNotFoundError):
+    try:
+        from app.database import get_db
+    except (ImportError, ModuleNotFoundError):
+        from app.routers.auth import get_db
 
-from pathlib import Path
-from fastapi.templating import Jinja2Templates
+try:
+    from app.models.schemas import TargetApplication, User, AuditLog, UserRole
+except (ImportError, ModuleNotFoundError):
+    from app.models import TargetApplication, User, AuditLog, UserRole
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+# ------------------------------------------------------------------------------
+# 🛠️ Helper Functions & Security Dependencies
+# ------------------------------------------------------------------------------
 
-router = APIRouter(prefix="/admin", tags=["Admin Dashboard"])
-templates = Jinja2Templates(directory="app/templates")
 
-ADMIN_SESSION_COOKIE = "dld_admin_session"
+# [ฟังก์ชันที่ 1] ตรวจสอบรหัสผ่านผ่าน bcrypt โดยตรง (ตัดความยาวป้องกัน ValueError)
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    if not plain_password or not hashed_password:
+        return False
+    pwd_bytes = plain_password.encode("utf-8")[:72]
+    try:
+        hash_bytes = hashed_password.encode("utf-8")
+        return bcrypt.checkpw(pwd_bytes, hash_bytes)
+    except Exception:
+        return False
 
-# Helper Function ตรวจสอบ Session การล็อกอินของ Admin
-async def get_current_admin(request: Request, db: AsyncSession = Depends(get_db)):
-    session_id = request.cookies.get(ADMIN_SESSION_COOKIE)
-    if not session_id:
-        return None
 
-    redis = get_redis()
-    session_data = await redis.hgetall(f"admin_session:{session_id}")
-    if not session_data:
-        return None
+# [ฟังก์ชันที่ 2] เข้ารหัสพาสเวิร์ดใหม่ด้วย bcrypt
+def get_password_hash(password: str) -> str:
+    pwd_bytes = password.encode("utf-8")[:72]
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(pwd_bytes, salt).decode("utf-8")
 
-    role = session_data.get("role")
-    if role not in [UserRole.SUPERADMIN.value, UserRole.APP_ADMIN.value]:
-        return None
 
-    app_name = "ทุกระบบส่วนกลาง" if role == UserRole.SUPERADMIN.value else "ไม่ระบุระบบ"
-    app_id = session_data.get("app_id")
-    if app_id:
-        app_obj = await db.scalar(select(TargetApplication).where(TargetApplication.id == uuid.UUID(app_id)))
-        if app_obj:
-            app_name = app_obj.app_name
-
-    session_data["app_name"] = app_name
-    return session_data
-
-# =========================================================================
-# 1. หน้าล็อกอินและกระบวนการเข้าสู่ระบบ/ออกจากระบบของ Admin
-# =========================================================================
-@router.get("/login", response_class=HTMLResponse)
-async def render_admin_login(request: Request):
-    return templates.TemplateResponse(request=request, name="admin/login.html", context={})
-
-@router.post("/login")
-async def process_admin_login(
-    request: Request,
-    username: str = Form(...),
-    password: str = Form(...),
-    totp_code: str = Form(...),
-    db: AsyncSession = Depends(get_db)
-):
-    stmt = select(User).where(User.username == username)
-    result = await db.execute(stmt)
-    user = result.scalars().first()
-
-    client_ip = request.client.host if request.client else "127.0.0.1"
-    user_agent = request.headers.get("user-agent", "")
-
-    if not user or user.role == UserRole.USER or not verify_password(password, user.password_hash):
-        return JSONResponse({"status": "failed", "message": "Username หรือ Password ไม่ถูกต้อง"}, status_code=401)
-
-    if not user.totp_secret or not verify_totp_code(user.totp_secret, totp_code):
-        return JSONResponse({"status": "failed", "message": "รหัส TOTP 6 หลักไม่ถูกต้อง"}, status_code=401)
-
-    redis = get_redis()
-    session_id = secrets.token_hex(32)
-    session_key = f"admin_session:{session_id}"
-    
-    await redis.hset(session_key, mapping={
-        "user_id": str(user.id),
-        "username": user.username,
-        "role": user.role.value,
-        "app_id": str(user.app_id) if user.app_id else "",
-        "must_change_password": "1" if user.must_change_password else "0"
-    })
-    await redis.expire(session_key, settings.SESSION_TTL_SECONDS)
-
-    # บันทึก Audit Log การเข้าสู่ระบบ Admin
-    await audit_logger(
-        db=db,
-        app_id=user.app_id,
-        app_domain="mfa.dld.go.th",
-        client_ip=client_ip,
-        username=user.username,
-        action=f"ADMIN_LOGIN ({user.role.value})",
-        user_agent=user_agent
-    )
-
-    response = JSONResponse({
-        "status": "success",
-        "redirect_url": "/admin",
-        "must_change_password": user.must_change_password
-    })
-    response.set_cookie(
-        key=ADMIN_SESSION_COOKIE,
-        value=session_id,
-        httponly=True,
-        secure=False,
-        samesite="lax",
-        max_age=settings.SESSION_TTL_SECONDS
-    )
-    return response
-
-@router.get("/logout")
-async def admin_logout(request: Request):
-    session_id = request.cookies.get(ADMIN_SESSION_COOKIE)
-    if session_id:
-        redis = get_redis()
-        await redis.delete(f"admin_session:{session_id}")
-    response = RedirectResponse(url="/admin/login", status_code=303)
-    response.delete_cookie(ADMIN_SESSION_COOKIE)
-    return response
-
-@router.get("", response_class=HTMLResponse)
-@router.get("/", response_class=HTMLResponse)
-async def render_admin_dashboard(request: Request, current_user=Depends(get_current_admin)):
-    if not current_user:
-        return RedirectResponse(url="/admin/login", status_code=303)
-    return templates.TemplateResponse(request=request, name="admin/dashboard.html", context={})
-
-# =========================================================================
-# 2. API สถิติภาพรวม Dashboard Metrics
-# =========================================================================
-@router.get("/api/metrics")
-async def get_dashboard_metrics(db: AsyncSession = Depends(get_db), current_user=Depends(get_current_admin)):
-    if not current_user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    is_super = current_user.get("role") == UserRole.SUPERADMIN.value
-    user_app_id = current_user.get("app_id")
-    admin_username = current_user.get("username")
-
-    if is_super:
-        total_apps = await db.scalar(select(func.count(TargetApplication.id)))
-        total_users = await db.scalar(select(func.count(User.id)))
-        total_logs = await db.scalar(select(func.count(AuditLog.id)))
-    else:
-        total_apps = 1 if user_app_id else 0
-        total_users = await db.scalar(select(func.count(User.id)).where(User.app_id == uuid.UUID(user_app_id))) if user_app_id else 0
-        
-        app_domain = await db.scalar(select(TargetApplication.public_domain).where(TargetApplication.id == uuid.UUID(user_app_id))) if user_app_id else ""
-        log_stmt = select(func.count(AuditLog.id)).where(
-            or_(
-                AuditLog.target_app_id == uuid.UUID(user_app_id) if user_app_id else False,
-                AuditLog.app_domain == app_domain if app_domain else False,
-                AuditLog.username == admin_username
-            )
-        )
-        total_logs = await db.scalar(log_stmt)
-
+# [ฟังก์ชันที่ 3] แปลงข้อมูลผู้ใช้งานให้อยู่ในรูปแบบ Dictionary มาตรฐาน
+def extract_user_info(user: Any) -> Dict[str, Any]:
+    if isinstance(user, dict):
+        return {
+            "id": str(user.get("id", "")),
+            "username": user.get("username", "Admin"),
+            "role": str(user.get("role", "SUPERADMIN")),
+            "app_id": user.get("app_id"),
+        }
+    role_val = getattr(user, "role", "SUPERADMIN")
+    role_str = str(role_val.value if hasattr(role_val, "value") else role_val)
     return {
-        "total_applications": total_apps or 0,
-        "total_users": total_users or 0,
-        "total_audit_logs": total_logs or 0,
-        "role": current_user.get("role"),
-        "username": current_user.get("username"),
-        "app_name": current_user.get("app_name"),
-        "must_change_password": current_user.get("must_change_password") == "1"
+        "id": str(getattr(user, "id", "")),
+        "username": getattr(user, "username", "Admin"),
+        "role": role_str,
+        "app_id": getattr(user, "app_id", None),
     }
 
-# =========================================================================
-# 3. API จัดการผู้ใช้งาน (Users & Reset MFA)
-# =========================================================================
-@router.get("/api/users")
-async def list_users(
-    app_id: str | None = None,
-    search: str | None = None,
+
+# [ฟังก์ชันที่ 4] Dependency สำหรับตรวจเช็ก Session Cookie และสิทธิ์การใช้งาน Admin
+async def get_current_admin(request: Request, db: AsyncSession = Depends(get_db)):
+    session_id = request.cookies.get("session")
+    if not session_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="กรุณาเข้าสู่ระบบก่อนใช้งาน",
+        )
+
+    try:
+        result = await db.execute(select(User).where(User.id == session_id))
+        user_obj = result.scalar_one_or_none()
+    except Exception:
+        user_obj = None
+
+    if not user_obj:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session ไม่ถูกต้องหรือหมดอายุ",
+        )
+
+    role_val = getattr(user_obj, "role", "")
+    role_str = str(role_val.value if hasattr(role_val, "value") else role_val)
+    if "ADMIN" not in role_str and "SUPERADMIN" not in role_str:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="ไม่มีสิทธิ์เข้าถึงส่วนผู้ดูแลระบบ",
+        )
+
+    return user_obj
+
+
+# ------------------------------------------------------------------------------
+# 🚀 APIRouter Setup
+# ------------------------------------------------------------------------------
+router = APIRouter(prefix="/admin", tags=["Admin Portal"])
+templates = Jinja2Templates(directory="app/templates")
+
+# In-memory token storage สำหรับล็อกอิน 2 ขั้นตอน (Step 1 -> Step 2)
+temp_login_tokens: Dict[str, Dict[str, Any]] = {}
+
+# ------------------------------------------------------------------------------
+# 🌐 Route Endpoints
+# ------------------------------------------------------------------------------
+
+
+# [ฟังก์ชันที่ 5] Redirect เส้นทางหลัก /admin ไปยัง Dashboard หรือ Login
+@router.get("", response_class=RedirectResponse, include_in_schema=False)
+@router.get("/", response_class=RedirectResponse, include_in_schema=False)
+async def admin_root_redirect(request: Request):
+    if request.cookies.get("session"):
+        return RedirectResponse(
+            url="/admin/dashboard", status_code=status.HTTP_302_FOUND
+        )
+    return RedirectResponse(url="/admin/login", status_code=status.HTTP_302_FOUND)
+
+
+# [ฟังก์ชันที่ 6] แสดงหน้าเข้าสู่ระบบ Admin Portal (Login HTML)
+@router.get("/login", response_class=HTMLResponse)
+async def admin_login_page(request: Request):
+    return templates.TemplateResponse(request=request, name="admin/login.html")
+
+
+# [ฟังก์ชันที่ 7] API Step 1 - ตรวจสอบ Username, Password และสร้าง QR Code สแกนผูกครั้งแรก
+@router.post("/api/login-step1")
+async def login_step1(
+    username: str = Form(...),
+    password: str = Form(...),
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_admin)
 ):
-    if not current_user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    result = await db.execute(select(User).where(User.username == username))
+    user_obj = result.scalar_one_or_none()
 
-    is_super = current_user.get("role") == UserRole.SUPERADMIN.value
-    user_app_id = current_user.get("app_id")
+    if not user_obj:
+        raise HTTPException(status_code=401, detail="Username หรือ Password ไม่ถูกต้อง")
 
-    stmt = select(User).options(selectinload(User.application))
+    current_hash = (
+        getattr(user_obj, "password_hash", None)
+        or getattr(user_obj, "hashed_password", None)
+        or getattr(user_obj, "password", None)
+    )
 
-    if not is_super and user_app_id:
-        stmt = stmt.where(User.app_id == uuid.UUID(user_app_id))
-    elif is_super and app_id:
-        stmt = stmt.where(User.app_id == uuid.UUID(app_id))
+    if not current_hash or not verify_password(password, current_hash):
+        raise HTTPException(status_code=401, detail="Username หรือ Password ไม่ถูกต้อง")
 
-    if search and search.strip():
-        stmt = stmt.where(User.username.ilike(f"%{search.strip()}%"))
-    
-    stmt = stmt.order_by(User.created_at.desc())
+    role_val = getattr(user_obj, "role", "")
+    role_str = str(role_val.value if hasattr(role_val, "value") else role_val)
+    if "ADMIN" not in role_str and "SUPERADMIN" not in role_str:
+        raise HTTPException(
+            status_code=403, detail="บัญชีนี้ไม่มีสิทธิ์เข้าใช้งานระบบผู้ดูแล"
+        )
+
+    existing_secret = getattr(user_obj, "totp_secret", None)
+    is_first_time = not bool(existing_secret)
+
+    totp_secret = pyotp.random_base32() if is_first_time else existing_secret
+    totp = pyotp.TOTP(totp_secret)
+    provisioning_uri = totp.provisioning_uri(
+        name=user_obj.username, issuer_name="DLD-MFAcenter (Admin)"
+    )
+    qr_code_url = f"https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={urllib.parse.quote(provisioning_uri)}"
+
+    temp_token = str(uuid.uuid4())
+    temp_login_tokens[temp_token] = {
+        "user_id": str(user_obj.id),
+        "username": user_obj.username,
+        "totp_secret": totp_secret,
+        "is_first_time": is_first_time,
+        "created_at": datetime.utcnow(),
+    }
+
+    return {
+        "success": True,
+        "temp_token": temp_token,
+        "is_first_time": is_first_time,
+        "totp_secret": totp_secret if is_first_time else None,
+        "qr_code_url": qr_code_url if is_first_time else None,
+    }
+
+
+# [ฟังก์ชันที่ 8] API Step 2 - ยืนยันรหัส OTP 6 หลัก และออก Cookie Session
+@router.post("/api/login-step2")
+async def login_step2(
+    response: Response,
+    temp_token: str = Form(...),
+    totp_code: str = Form(...),
+    db: AsyncSession = Depends(get_db),
+):
+    token_data = temp_login_tokens.get(temp_token)
+    if not token_data:
+        raise HTTPException(
+            status_code=401, detail="Session หมดอายุ กรุณาเข้าสู่ระบบใหม่อีกครั้ง"
+        )
+
+    totp_secret = token_data["totp_secret"]
+    totp = pyotp.TOTP(totp_secret)
+
+    if not totp.verify(totp_code):
+        raise HTTPException(
+            status_code=400, detail="รหัส OTP 6 หลักไม่ถูกต้องหรือหมดอายุ"
+        )
+
+    if token_data.get("is_first_time"):
+        user_res = await db.execute(
+            select(User).where(User.id == token_data["user_id"])
+        )
+        user_obj = user_res.scalar_one_or_none()
+        if user_obj:
+            user_obj.totp_secret = totp_secret
+            if hasattr(user_obj, "is_mfa_enrolled"):
+                user_obj.is_mfa_enrolled = True
+            await db.commit()
+
+    del temp_login_tokens[temp_token]
+
+    response.set_cookie(
+        key="session",
+        value=token_data["user_id"],
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+    return {"success": True, "redirect_url": "/admin/dashboard"}
+
+
+# [ฟังก์ชันที่ 9] API ออกจากระบบ (Logout) และล้าง Cookie
+@router.get("/logout", response_class=RedirectResponse)
+async def admin_logout(response: Response):
+    res = RedirectResponse(url="/admin/login", status_code=status.HTTP_302_FOUND)
+    res.delete_cookie(key="session", path="/")
+    return res
+
+
+# [ฟังก์ชันที่ 10] แสดงหน้า Admin Dashboard (คุ้มครองด้วยการตรวจเช็ก Session Cookie)
+@router.get("/dashboard", response_class=HTMLResponse)
+async def admin_dashboard_page(request: Request, db: AsyncSession = Depends(get_db)):
+    session_id = request.cookies.get("session")
+    if not session_id:
+        return RedirectResponse(url="/admin/login", status_code=status.HTTP_302_FOUND)
+
+    try:
+        result = await db.execute(select(User).where(User.id == session_id))
+        user_obj = result.scalar_one_or_none()
+    except Exception:
+        user_obj = None
+
+    if not user_obj:
+        response = RedirectResponse(
+            url="/admin/login", status_code=status.HTTP_302_FOUND
+        )
+        response.delete_cookie(key="session", path="/")
+        return response
+
+    role_val = getattr(user_obj, "role", "")
+    role_str = str(role_val.value if hasattr(role_val, "value") else role_val)
+    if "ADMIN" not in role_str and "SUPERADMIN" not in role_str:
+        response = RedirectResponse(
+            url="/admin/login", status_code=status.HTTP_302_FOUND
+        )
+        response.delete_cookie(key="session", path="/")
+        return response
+
+    return templates.TemplateResponse(request=request, name="admin/dashboard.html")
+
+
+# [ฟังก์ชันที่ 11] API ดึงข้อมูลสถิติภาพรวม (Summary Cards)
+@router.get("/api/metrics")
+async def get_admin_metrics(
+    db: AsyncSession = Depends(get_db), current_user=Depends(get_current_admin)
+):
+    user_info = extract_user_info(current_user)
+    role = user_info["role"]
+    app_id = user_info["app_id"]
+
+    if "SUPERADMIN" in role:
+        app_count = (
+            await db.execute(select(func.count(TargetApplication.id)))
+        ).scalar() or 0
+        user_count = (await db.execute(select(func.count(User.id)))).scalar() or 0
+        log_count = (await db.execute(select(func.count(AuditLog.id)))).scalar() or 0
+        app_name = "ส่วนกลาง (ทุกระบบงาน)"
+    else:
+        app_count = 1 if app_id else 0
+        user_count = (
+            await db.execute(select(func.count(User.id)).where(User.app_id == app_id))
+        ).scalar() or 0
+        log_count = (await db.execute(select(func.count(AuditLog.id)))).scalar() or 0
+        app_obj = (
+            await db.execute(
+                select(TargetApplication).where(TargetApplication.id == app_id)
+            )
+        ).scalar_one_or_none()
+        app_name = app_obj.app_name if app_obj else "ไม่ระบุระบบงาน"
+
+    return {
+        "username": user_info["username"],
+        "role": role,
+        "app_name": app_name,
+        "total_applications": app_count,
+        "total_users": user_count,
+        "total_audit_logs": log_count,
+        "must_change_password": False,
+    }
+
+
+# [ฟังก์ชันที่ 12] API ดึงข้อมูลสถิติกราฟ Visual Analytics (กราฟแนวโน้ม และ กราฟสัดส่วนผู้ใช้รายระบบ)
+@router.get("/api/chart-data")
+async def get_chart_data(
+    days: int = 7,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_admin),
+):
+    user_info = extract_user_info(current_user)
+    role = user_info["role"]
+    app_id = user_info["app_id"]
+
+    today = datetime.utcnow().date()
+    start_date = today - timedelta(days=days - 1)
+
+    daily_query = select(
+        func.date(AuditLog.timestamp).label("log_date"),
+        func.count(AuditLog.id).label("count"),
+    ).where(AuditLog.timestamp >= start_date)
+
+    daily_query = daily_query.where(
+        func.lower(func.cast(AuditLog.action, String)).like("%login%")
+        | func.lower(func.cast(AuditLog.action, String)).like("%success%")
+        | func.lower(func.cast(AuditLog.action, String)).like("%verified%")
+    )
+
+    if "SUPERADMIN" not in role and app_id and hasattr(AuditLog, "app_id"):
+        daily_query = daily_query.where(AuditLog.app_id == app_id)
+
+    daily_query = daily_query.group_by(func.date(AuditLog.timestamp)).order_by(
+        "log_date"
+    )
+    daily_result = await db.execute(daily_query)
+    daily_map = {str(row[0]): row[1] for row in daily_result.all()}
+
+    dates = [str(start_date + timedelta(days=i)) for i in range(days)]
+    daily_counts = [daily_map.get(d, 0) for d in dates]
+
+    user_app_query = select(
+        TargetApplication.app_name, func.count(User.id).label("count")
+    ).outerjoin(User, TargetApplication.id == User.app_id)
+
+    if "SUPERADMIN" not in role and app_id:
+        user_app_query = user_app_query.where(TargetApplication.id == app_id)
+
+    user_app_query = user_app_query.group_by(TargetApplication.app_name)
+    user_app_result = await db.execute(user_app_query)
+    users_by_app = {row[0] or "ไม่มีระบบงาน": row[1] for row in user_app_result.all()}
+
+    if "SUPERADMIN" in role:
+        unassigned_res = await db.execute(
+            select(func.count(User.id)).where(User.app_id.is_(None))
+        )
+        unassigned_count = unassigned_res.scalar() or 0
+        if unassigned_count > 0:
+            users_by_app["Superadmin / ส่วนกลาง"] = unassigned_count
+
+    return {
+        "users_by_app": users_by_app,
+        "daily_trends": {"labels": dates, "counts": daily_counts},
+    }
+
+
+# [ฟังก์ชันที่ 13] API ดึงรายชื่อผู้ใช้งานทั้งหมด
+@router.get("/api/users")
+async def get_users_list(
+    db: AsyncSession = Depends(get_db), current_user=Depends(get_current_admin)
+):
+    user_info = extract_user_info(current_user)
+    role = user_info["role"]
+    app_id = user_info["app_id"]
+
+    stmt = select(User, TargetApplication.app_name).outerjoin(
+        TargetApplication, User.app_id == TargetApplication.id
+    )
+    if "SUPERADMIN" not in role and app_id:
+        stmt = stmt.where(User.app_id == app_id)
+
     result = await db.execute(stmt)
-    users = result.scalars().all()
-
-    redis = get_redis()
     user_list = []
-    for u in users:
-        is_enrolled = await redis.get(f"totp_enrolled:{u.username}")
-        
-        if u.role == UserRole.SUPERADMIN:
-            app_display_name = "ทุกระบบส่วนกลาง"
-        elif u.application:
-            app_display_name = u.application.app_name
-        else:
-            app_display_name = "ไม่ระบุระบบ"
-
-        user_list.append({
-            "id": str(u.id),
-            "username": u.username,
-            "role": u.role.value,
-            "app_id": str(u.app_id) if u.app_id else None,
-            "app_name": app_display_name,
-            "is_mfa_enrolled": bool(is_enrolled or u.totp_secret),
-            "must_change_password": u.must_change_password,
-            "created_at": u.created_at.isoformat() if u.created_at else None
-        })
-
+    for u, app_name in result.all():
+        role_str = str(u.role.value if hasattr(u.role, "value") else u.role)
+        user_list.append(
+            {
+                "id": str(u.id),
+                "username": u.username,
+                "role": role_str,
+                "app_id": str(u.app_id) if u.app_id else None,
+                "app_name": app_name
+                or ("ส่วนกลาง" if "SUPERADMIN" in role_str else "ไม่ระบุ"),
+                "is_mfa_enrolled": bool(
+                    getattr(u, "totp_secret", None)
+                    or getattr(u, "is_mfa_enrolled", False)
+                ),
+                "must_change_password": getattr(u, "must_change_password", False),
+            }
+        )
     return user_list
 
-# =========================================================================
-# 4. API จัดการระบบงาน (Target Applications) & Emergency MFA Bypass
-# =========================================================================
+
+# [ฟังก์ชันที่ 14] API ล้างค่า MFA (Reset TOTP Secret) ของผู้ใช้
+@router.post("/api/users/{user_id}/reset-mfa")
+async def reset_user_mfa(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_admin),
+):
+    res = await db.execute(select(User).where(User.id == user_id))
+    user_obj = res.scalar_one_or_none()
+    if not user_obj:
+        raise HTTPException(status_code=404, detail="ไม่พบผู้ใช้งาน")
+
+    user_obj.totp_secret = None
+    if hasattr(user_obj, "is_mfa_enrolled"):
+        user_obj.is_mfa_enrolled = False
+
+    await db.commit()
+    return {"message": f"Reset MFA สำหรับผู้ใช้ '{user_obj.username}' เรียบร้อยแล้ว"}
+
+
+# [ฟังก์ชันที่ 15] API ดึงรายชื่อระบบงานปลายทาง (Target Applications)
 @router.get("/api/apps")
-async def list_target_applications(db: AsyncSession = Depends(get_db), current_user=Depends(get_current_admin)):
-    if not current_user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    stmt = select(TargetApplication).order_by(TargetApplication.created_at.desc())
-    result = await db.execute(stmt)
-    apps = result.scalars().all()
-
-    app_list = []
-    for app in apps:
-        app_list.append({
+async def get_apps_list(
+    db: AsyncSession = Depends(get_db), current_user=Depends(get_current_admin)
+):
+    res = await db.execute(select(TargetApplication))
+    apps = res.scalars().all()
+    return [
+        {
             "id": str(app.id),
             "app_name": app.app_name,
             "public_domain": app.public_domain,
-            "backend_target_url": app.backend_target_url,
-            "enable_mfa": app.enable_mfa,
-            "is_bypass_enabled": bool(app.is_bypass_enabled)  # ส่งสถานะ Bypass ล่าสุด
-        })
+            "backend_target_url": getattr(
+                app, "backend_target_url", getattr(app, "backend_url", "-")
+            ),
+            "enable_mfa": getattr(app, "enable_mfa", True),
+            "is_bypass_enabled": getattr(app, "is_bypass_enabled", False),
+        }
+        for app in apps
+    ]
 
-    return app_list
 
+# [ฟังก์ชันที่ 16] API ลงทะเบียนระบบงานใหม่
 @router.post("/api/apps")
-async def create_target_application(
-    request: Request,
+async def create_app(
     app_name: str = Form(...),
     public_domain: str = Form(...),
     backend_target_url: str = Form(...),
     enable_mfa: bool = Form(True),
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_admin)
+    current_user=Depends(get_current_admin),
 ):
-    if not current_user or current_user.get("role") != UserRole.SUPERADMIN.value:
-        raise HTTPException(status_code=403, detail="เฉพาะ Superadmin เท่านั้นที่เพิ่มระบบงานได้")
+    user_info = extract_user_info(current_user)
+    if "SUPERADMIN" not in user_info["role"]:
+        raise HTTPException(status_code=403, detail="สิทธิ์ไม่เพียงพอ")
 
-    existing = await db.scalar(select(TargetApplication).where(TargetApplication.public_domain == public_domain.strip()))
-    if existing:
-        raise HTTPException(status_code=400, detail="Domain หน้าบ้านนี้ถูกใช้งานในระบบแล้ว")
+    app_kwargs = {
+        "app_name": app_name,
+        "public_domain": public_domain,
+        "enable_mfa": enable_mfa,
+    }
+    if hasattr(TargetApplication, "backend_target_url"):
+        app_kwargs["backend_target_url"] = backend_target_url
+    elif hasattr(TargetApplication, "backend_url"):
+        app_kwargs["backend_url"] = backend_target_url
 
-    new_app = TargetApplication(
-        id=uuid.uuid4(),
-        app_name=app_name.strip(),
-        public_domain=public_domain.strip(),
-        backend_target_url=backend_target_url.strip(),
-        enable_mfa=enable_mfa,
-        is_bypass_enabled=False
-    )
+    new_app = TargetApplication(**app_kwargs)
     db.add(new_app)
     await db.commit()
+    return {"message": f"ลงทะเบียนระบบงาน '{app_name}' สำเร็จ"}
 
-    # บันทึก Audit Log
-    client_ip = request.client.host if request.client else "127.0.0.1"
-    await audit_logger(
-        db=db,
-        app_id=new_app.id,
-        app_domain=new_app.public_domain,
-        client_ip=client_ip,
-        username=current_user.get("username"),
-        action=f"CREATE_APPLICATION ({new_app.app_name})",
-        user_agent=request.headers.get("user-agent", "")
-    )
 
-    return {"status": "success", "message": f"เพิ่มระบบงาน {new_app.app_name} สำเร็จ"}
-
-# ⚡ API สลับสถานะ Emergency MFA Bypass (Superadmin เท่านั้น)
+# [ฟังก์ชันที่ 17] API สลับสวิตช์ Emergency MFA Bypass
 @router.post("/api/apps/{app_id}/toggle-bypass")
 async def toggle_app_bypass(
     app_id: str,
-    request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_admin)
+    current_user=Depends(get_current_admin),
 ):
-    if not current_user or current_user.get("role") != UserRole.SUPERADMIN.value:
-        raise HTTPException(status_code=403, detail="เฉพาะ Superadmin เท่านั้นที่มีสิทธิ์เปิด/ปิด Bypass")
+    user_info = extract_user_info(current_user)
+    if "SUPERADMIN" not in user_info["role"]:
+        raise HTTPException(status_code=403, detail="สิทธิ์ไม่เพียงพอ")
 
-    target_uuid = uuid.UUID(app_id)
-    app = await db.scalar(select(TargetApplication).where(TargetApplication.id == target_uuid))
-    if not app:
+    res = await db.execute(
+        select(TargetApplication).where(TargetApplication.id == app_id)
+    )
+    app_obj = res.scalar_one_or_none()
+    if not app_obj:
         raise HTTPException(status_code=404, detail="ไม่พบระบบงาน")
 
-    # สลับสถานะ True <-> False
-    app.is_bypass_enabled = not app.is_bypass_enabled
+    app_obj.is_bypass_enabled = not getattr(app_obj, "is_bypass_enabled", False)
     await db.commit()
-
-    # บันทึก Audit Log
-    client_ip = request.client.host if request.client else "127.0.0.1"
-    action_name = "ENABLE_EMERGENCY_BYPASS" if app.is_bypass_enabled else "DISABLE_EMERGENCY_BYPASS"
-    await audit_logger(
-        db=db,
-        app_id=app.id,
-        app_domain=app.public_domain,
-        client_ip=client_ip,
-        username=current_user.get("username"),
-        action=f"{action_name} ({app.app_name})",
-        user_agent=request.headers.get("user-agent", "")
+    status_str = (
+        "เปิดใช้งาน (Bypass)" if app_obj.is_bypass_enabled else "ปิดใช้งาน (บังคับ MFA)"
     )
-
-    status_msg = "เปิดใช้งาน MFA Bypass กรณีฉุกเฉิน" if app.is_bypass_enabled else "ปิดใช้งาน MFA Bypass (กลับสู่โหมดปกติ)"
     return {
-        "status": "success",
-        "message": f"{status_msg} สำหรับ {app.app_name} เรียบร้อยแล้ว",
-        "is_bypass_enabled": app.is_bypass_enabled
+        "message": f"เปลี่ยนสถานะ MFA Bypass ของระบบ '{app_obj.app_name}' เป็น {status_str}"
     }
 
-# =========================================================================
-# 5. API จัดการอื่นๆ (สร้าง Admin, เปลี่ยนรหัสผ่าน, Reset MFA, Audit Logs)
-# =========================================================================
+
+# [ฟังก์ชันที่ 18] API ดึงบันทึกเหตุการณ์ความปลอดภัย (Audit Logs)
+@router.get("/api/audit-logs")
+async def get_audit_logs(
+    db: AsyncSession = Depends(get_db), current_user=Depends(get_current_admin)
+):
+    res = await db.execute(
+        select(AuditLog).order_by(AuditLog.timestamp.desc()).limit(200)
+    )
+    logs = res.scalars().all()
+    return [
+        {
+            "id": str(log.id),
+            "timestamp": log.timestamp.isoformat() if log.timestamp else None,
+            "app_domain": getattr(log, "app_domain", "-"),
+            "client_ip": getattr(log, "client_ip", "-"),
+            "username": getattr(log, "username", "-"),
+            "action": str(
+                log.action.value if hasattr(log.action, "value") else log.action
+            ),
+        }
+        for log in logs
+    ]
+
+
+# [ฟังก์ชันที่ 19] API เพิ่มผู้ดูแลระบบประจำแอป (App Admin)
 @router.post("/api/create-admin")
 async def create_app_admin(
-    request: Request,
+    app_id: str = Form(...),
     username: str = Form(...),
     password: str = Form(...),
-    app_id: str = Form(...),
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_admin)
+    current_user=Depends(get_current_admin),
 ):
-    if not current_user or current_user.get("role") != UserRole.SUPERADMIN.value:
-        raise HTTPException(status_code=403, detail="เฉพาะ Superadmin เท่านั้นที่สร้าง Admin ได้")
+    user_info = extract_user_info(current_user)
+    if "SUPERADMIN" not in user_info["role"]:
+        raise HTTPException(status_code=403, detail="สิทธิ์ไม่เพียงพอ")
 
-    existing = await db.scalar(select(User).where(User.username == username.strip()))
-    if existing:
-        raise HTTPException(status_code=400, detail="ชื่อผู้ใช้งานนี้มีอยู่ในระบบแล้ว")
+    existing_res = await db.execute(select(User).where(User.username == username))
+    if existing_res.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Username นี้มีอยู่ในระบบแล้ว")
 
-    target_app_uuid = uuid.UUID(app_id)
-    new_admin = User(
-        username=username.strip(),
-        password_hash=hash_password(password),
-        role=UserRole.APP_ADMIN,
-        app_id=target_app_uuid,
-        totp_secret="JBSWY3DPEHPK3PXP",
-        must_change_password=True
-    )
+    hashed_pwd = get_password_hash(password)
+    admin_role = getattr(UserRole, "APP_ADMIN", "APP_ADMIN")
+
+    user_kwargs = {"username": username, "role": admin_role, "app_id": app_id}
+    if hasattr(User, "password_hash"):
+        user_kwargs["password_hash"] = hashed_pwd
+    elif hasattr(User, "hashed_password"):
+        user_kwargs["hashed_password"] = hashed_pwd
+    elif hasattr(User, "password"):
+        user_kwargs["password"] = hashed_pwd
+
+    if hasattr(User, "must_change_password"):
+        user_kwargs["must_change_password"] = True
+
+    new_admin = User(**user_kwargs)
     db.add(new_admin)
     await db.commit()
+    return {"message": f"เพิ่ม App Admin '{username}' สำเร็จ"}
 
-    client_ip = request.client.host if request.client else "127.0.0.1"
-    await audit_logger(
-        db=db,
-        app_id=target_app_uuid,
-        app_domain="mfa.dld.go.th",
-        client_ip=client_ip,
-        username=current_user.get("username"),
-        action=f"CREATE_APP_ADMIN ({username.strip()})",
-        user_agent=request.headers.get("user-agent", "")
-    )
 
-    return {"status": "success", "message": f"สร้าง Admin {username} สำเร็จ"}
-
+# [ฟังก์ชันที่ 20] API เปลี่ยนรหัสผ่าน Admin
 @router.post("/api/change-password")
-async def change_admin_password(
-    request: Request,
+async def change_password(
     old_password: str = Form(...),
     new_password: str = Form(...),
     confirm_password: str = Form(...),
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_admin)
+    current_user=Depends(get_current_admin),
 ):
-    if not current_user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
     if new_password != confirm_password:
-        raise HTTPException(status_code=400, detail="รหัสผ่านใหม่และการยืนยันรหัสผ่านไม่ตรงกัน")
+        raise HTTPException(
+            status_code=400, detail="รหัสผ่านใหม่และการยืนยันรหัสผ่านไม่ตรงกัน"
+        )
 
-    if len(new_password) < 6:
-        raise HTTPException(status_code=400, detail="รหัสผ่านใหม่ต้องมีความยาวอย่างน้อย 6 ตัวอักษร")
+    user_info = extract_user_info(current_user)
+    user_id = user_info["id"]
 
-    user_id = current_user.get("user_id")
-    user = await db.scalar(select(User).where(User.id == uuid.UUID(user_id)))
-
-    if not user or not verify_password(old_password, user.password_hash):
-        raise HTTPException(status_code=400, detail="รหัสผ่านเดิมไม่ถูกต้อง")
-
-    user.password_hash = hash_password(new_password)
-    user.must_change_password = False
-    await db.commit()
-
-    client_ip = request.client.host if request.client else "127.0.0.1"
-    await audit_logger(
-        db=db,
-        app_id=user.app_id,
-        app_domain="mfa.dld.go.th",
-        client_ip=client_ip,
-        username=user.username,
-        action="CHANGE_PASSWORD",
-        user_agent=request.headers.get("user-agent", "")
-    )
-
-    return {"status": "success", "message": "เปลี่ยนรหัสผ่านสำเร็จแล้ว"}
-
-@router.post("/api/users/{user_id}/reset-mfa")
-async def reset_user_mfa(
-    user_id: str,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_admin)
-):
-    if not current_user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    is_super = current_user.get("role") == UserRole.SUPERADMIN.value
-    admin_app_id = current_user.get("app_id")
-
-    user = await db.scalar(select(User).where(User.id == uuid.UUID(user_id)))
-    if not user:
+    result = await db.execute(select(User).where(User.id == user_id))
+    user_obj = result.scalar_one_or_none()
+    if not user_obj:
         raise HTTPException(status_code=404, detail="ไม่พบผู้ใช้งาน")
 
-    if not is_super and str(user.app_id) != admin_app_id:
-        raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์จัดการผู้ใช้งานในระบบนี้")
-
-    redis = get_redis()
-    await redis.delete(f"totp_enrolled:{user.username}")
-    user.totp_secret = None
-    await db.commit()
-
-    client_ip = request.client.host if request.client else "127.0.0.1"
-    await audit_logger(
-        db=db,
-        app_id=user.app_id,
-        app_domain="mfa.dld.go.th",
-        client_ip=client_ip,
-        username=current_user.get("username"),
-        action=f"RESET_MFA ({user.username})",
-        user_agent=request.headers.get("user-agent", "")
+    current_hash = (
+        getattr(user_obj, "password_hash", None)
+        or getattr(user_obj, "hashed_password", None)
+        or getattr(user_obj, "password", None)
     )
 
-    return {"status": "success", "message": f"Reset MFA ให้ {user.username} สำเร็จ"}
+    if not current_hash or not verify_password(old_password, current_hash):
+        raise HTTPException(status_code=400, detail="รหัสผ่านเดิมไม่ถูกต้อง")
 
-@router.get("/api/audit-logs")
-async def get_recent_audit_logs(
-    limit: int = 100,
-    db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_admin)
-):
-    if not current_user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    new_hash = get_password_hash(new_password)
+    if hasattr(user_obj, "password_hash"):
+        user_obj.password_hash = new_hash
+    elif hasattr(user_obj, "hashed_password"):
+        user_obj.hashed_password = new_hash
+    elif hasattr(user_obj, "password"):
+        user_obj.password = new_hash
 
-    is_super = current_user.get("role") == UserRole.SUPERADMIN.value
-    user_app_id = current_user.get("app_id")
-    admin_username = current_user.get("username")
+    if hasattr(user_obj, "must_change_password"):
+        user_obj.must_change_password = False
 
-    stmt = select(AuditLog)
-
-    if not is_super:
-        filters = []
-        if user_app_id:
-            filters.append(AuditLog.target_app_id == uuid.UUID(user_app_id))
-            app_domain = await db.scalar(
-                select(TargetApplication.public_domain).where(TargetApplication.id == uuid.UUID(user_app_id))
-            )
-            if app_domain:
-                filters.append(AuditLog.app_domain == app_domain)
-
-        if admin_username:
-            filters.append(AuditLog.username == admin_username)
-
-        if filters:
-            stmt = stmt.where(or_(*filters))
-
-    stmt = stmt.order_by(desc(AuditLog.timestamp)).limit(limit)
-    result = await db.execute(stmt)
-    return result.scalars().all()
+    await db.commit()
+    return {"message": "เปลี่ยนรหัสผ่านเรียบร้อยแล้ว"}
