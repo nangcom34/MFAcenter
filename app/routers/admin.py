@@ -456,34 +456,46 @@ async def get_apps_list(
     ]
 
 
-# [ฟังก์ชันที่ 16] API ลงทะเบียนระบบงานใหม่
+# [ฟังก์ชันที่ 16] API ลงทะเบียนระบบงานปลายทางใหม่ (Superadmin Only)
 @router.post("/api/apps")
 async def create_app(
     app_name: str = Form(...),
     public_domain: str = Form(...),
     backend_target_url: str = Form(...),
     enable_mfa: bool = Form(True),
+    is_bypass_enabled: bool = Form(False),
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(get_current_admin),
+    current_user=Depends(get_current_admin)
 ):
     user_info = extract_user_info(current_user)
     if "SUPERADMIN" not in user_info["role"]:
-        raise HTTPException(status_code=403, detail="สิทธิ์ไม่เพียงพอ")
+        raise HTTPException(status_code=403, detail="สิทธิ์ไม่เพียงพอในการเพิ่มระบบงาน")
+
+    # ตัดช่องว่างและรูปแบบโปรโตคอลออก เพื่อให้เหลือเฉพาะชื่อ Domain
+    clean_domain = public_domain.strip().lower().replace("http://", "").replace("https://", "").split("/")[0]
+    clean_backend = backend_target_url.strip()
+
+    # ตรวจสอบว่าโดเมนสาธารณะนี้เคยลงทะเบียนไว้แล้วหรือไม่
+    existing_app = await db.execute(select(TargetApplication).where(TargetApplication.public_domain == clean_domain))
+    if existing_app.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail=f"โดเมน '{clean_domain}' มีการลงทะเบียนในระบบแล้ว")
 
     app_kwargs = {
-        "app_name": app_name,
-        "public_domain": public_domain,
+        "app_name": app_name.strip(),
+        "public_domain": clean_domain,
         "enable_mfa": enable_mfa,
+        "is_bypass_enabled": is_bypass_enabled
     }
+
     if hasattr(TargetApplication, "backend_target_url"):
-        app_kwargs["backend_target_url"] = backend_target_url
+        app_kwargs["backend_target_url"] = clean_backend
     elif hasattr(TargetApplication, "backend_url"):
-        app_kwargs["backend_url"] = backend_target_url
+        app_kwargs["backend_url"] = clean_backend
 
     new_app = TargetApplication(**app_kwargs)
     db.add(new_app)
     await db.commit()
-    return {"message": f"ลงทะเบียนระบบงาน '{app_name}' สำเร็จ"}
+    return {"message": f"ลงทะเบียนระบบงาน '{app_name.strip()}' สำหรับโดเมน '{clean_domain}' สำเร็จ"}
 
 
 # [ฟังก์ชันที่ 17] API สลับสวิตช์ Emergency MFA Bypass
